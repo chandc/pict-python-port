@@ -117,8 +117,28 @@ gradients, and the difference in converged loss after a short training run. **Pu
 either way** — if the shortcut is used in later stages, its bias must be a stated quantity, not
 an unexamined convenience.
 
-**Angle already measured** (Stage 3, 12³, 5-step rollout): **1.75°**, magnitude ratio **1.003**
-— inside the 5° threshold, so the shortcut is acceptable at this configuration.
+**Gate — complete** ([`nn_stage4_bias.py`](../nn_stage4_bias.py)), and it **overturned the
+criterion this plan originally specified.**
+
+| | frozen-coefficient | `exact_A` |
+|---|---|---|
+| max rel. error vs finite differences | 1.16e-01 | **1.99e-02** |
+| angle between the two gradients | — | **0.395°** |
+| **converged loss after identical training** | 2.70e-02 | **2.15e-02** |
+
+The angle is 0.4°, which by the "< 5°" rule written above would pass comfortably. Yet the
+converged loss is **25.4% worse**. **An angle threshold is therefore not sufficient**, and the
+original criterion was wrong. A small but *systematic* bias barely tilts the gradient at any one
+point in parameter space, but it accumulates across the optimisation and shifts the fixed point
+that training converges to. The converged-loss comparison is the binding test; the angle is a
+cheap screen, nothing more.
+
+**Recommendation: use `exact_A=True`.** The cost is one differentiable matrix assembly per step,
+and it recovers ~6× more of the true gradient.
+
+**Residual, stated rather than hidden:** even `exact_A` is not exact. $\Gamma = J/A_\text{diag}$,
+and hence $M$ and $G$, are still detached — that is what the remaining ~2% against finite
+differences represents. Closing it would need torch versions of the pressure operators.
 
 Worth noting *why the angle is the right metric*: per-component relative error between the two
 gradients reaches **16%**, which looks alarming, yet the gradient *direction* — the only thing
@@ -126,7 +146,7 @@ descent uses — differs by under 2°. Small components can be badly wrong in re
 contributing nothing to the direction. Had the criterion been per-component error, this shortcut
 would have been rejected on a misleading number.
 
-*Remaining for Stage 4:* the Δ converged-loss comparison after training with each gradient.
+
 
 ---
 
@@ -169,7 +189,7 @@ they are debugging instruments, not experiments, and should run in seconds to mi
 | **2** ✅ | tiny CNN predicts a source field | 16³ **periodic** Cartesian, 1 step, 173 weights, target from the same architecture with different weights | (a) FD on **every** weight, max rel. err < 1e-5 → **4.6e-08**; (b) reproduce the target **velocity** to < 1e-3 → **8.9e-04**; (c) shift-equivariance < 1e-10 → **1.1e-16** |
 | **3** ✅ | same CNN, 5-step rollout | 12³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5 → **6.1e-09**; (b) checkpointed == non-checkpointed → **exactly 0**; (c) peak memory at 16 steps **0.8 MB vs 13.8 MB**; (d) $\lVert\lambda\rVert$ ratio early→late **0.91** (bounded) |
 | **3.5** | **3D Taylor-Green energy budget** | 48³ periodic, $\nu=0.01$, $t\in[0,2]$ | (a) $-\mathrm{d}E/\mathrm{d}t$ vs $2\nu Z$ agree within **5%** for central; (b) numerical dissipation *quantified* for SOU; (c) $E$ monotone decreasing; (d) flux divergence < 1e-9 throughout |
-| **4** | frozen-coefficient bias | 16³ periodic, 10-step rollout | Report, do not gate: angle between exact and frozen gradients (deg), and $\Delta$ converged loss after 200 training steps. **Publish the number**; only use the shortcut if the angle < 5° |
+| **4** ✅ | frozen-coefficient bias | 10³ periodic, 5-step rollout | Measured: angle **0.40°**, but converged loss **25.4% worse**, and FD error 1.16e-01 → 1.99e-02 with `exact_A`. **The angle criterion proved insufficient** — see below. Recommendation: `exact_A=True` |
 | **5a** | a-priori SGS regression | filter 64³ → 16³ TGV, no solver in the loop | correlation with the true SGS term > **0.8** on held-out snapshots |
 | **5b** | a-posteriori closure training | 16³ coarse vs filtered 64³, 20-step rollout | (a) trajectory error beats **no model** by > 30%; (b) beats the 5a model used a-posteriori; (c) stable over 5× the training horizon. If (b) fails, differentiability bought nothing — report that plainly |
 
@@ -240,7 +260,7 @@ Stage 1  done  scalar recovery        <- proves sign and scale
 Stage 2  done  tiny CNN, all weights  <- proves the field mapping
 Stage 3  done  rollout + checkpoint   <- proves the time chain
 Stage 3.5 TGV energy budget     <- proves the baseline is not numerically polluted
-Stage 4  part   frozen-coeff bias     <- angle measured (1.75 deg); loss delta pending
+Stage 4  done   frozen-coeff bias     <- angle 0.4 deg BUT loss 25% worse; use exact_A
 Stage 5a a-priori regression    <- isolates network capacity
 Stage 5b a-posteriori training  <- the actual PICT configuration
 ```

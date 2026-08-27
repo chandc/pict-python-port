@@ -24,8 +24,12 @@ from torch.utils.checkpoint import checkpoint
 
 def _one_step(sim, net, u, v, w, rebuild=True):
     if rebuild:
-        un = [t.detach().numpy().reshape(sim.shape) for t in (u, v, w)]
-        sim.build(*un)                              # frozen-coefficient linearisation
+        if getattr(sim, "exact_A", False):
+            # keep the convecting velocity IN the graph so dL/dA reaches u^n
+            sim.build(u, v, w)
+        else:
+            un = [t.detach().numpy().reshape(sim.shape) for t in (u, v, w)]
+            sim.build(*un)                          # frozen-coefficient linearisation
     S = net.field(u, v, w, sim.shape)               # torch in -> stays in the graph
     return sim.step(u, v, w, S)
 

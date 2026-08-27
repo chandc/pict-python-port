@@ -26,6 +26,7 @@ import torch
 from phase1_grid_metrics import make_grid, compute_numerical_metrics
 from phase3_momentum import build_momentum_matrix_7point, build_conservative_diffusion_matrix
 from adjoint_piso import LinearSolve, csr_pattern
+from momentum_torch import MomentumAssembler
 
 _KEYS = [("xi_x", "xi_y", "xi_z"), ("eta_x", "eta_y", "eta_z"), ("zeta_x", "zeta_y", "zeta_z")]
 
@@ -85,7 +86,15 @@ def _sp2torch(A):
 class DifferentiablePISO:
     """One PISO step, differentiable in an additive momentum source S."""
 
-    def __init__(self, n=16, nu=0.05, dt=0.05):
+    def __init__(self, n=16, nu=0.05, dt=0.05, exact_A=False):
+        """
+        exact_A=True assembles the momentum matrix differentiably, so dL/dA propagates back to
+        the convecting velocity (PICT's SetupAdvectionMatrixEulerImplicit_GRAD). Gamma =
+        J/A_diag, and hence M and G, are still taken detached -- so this captures A's
+        dependence but not Gamma's. How much of the exact gradient that recovers is measured
+        rather than assumed: see nn_stage4_bias.py.
+        """
+        self.exact_A = exact_A
         self.shape = (n, n, n)
         self.x, self.y, self.z, *h = make_grid(n, warp=1e-9, periodic=True)
         self.h = tuple(h)
@@ -94,16 +103,31 @@ class DifferentiablePISO:
         self.nu, self.dt, self.N = nu, dt, n ** 3
 
     def build(self, u, v, w):
-        """Assemble everything that depends only on the (frozen) convecting velocity."""
+        """Assemble everything that depends on the convecting velocity."""
         n = self.shape[0]
-        A = build_momentum_matrix_7point(n, n, n, self.J, self.m, *self.h, u, v, w,
-                                         self.nu, periodic=True)
-        A = (A + sparse.diags(self.J.ravel() / self.dt)).tocsr()
+        if self.exact_A:
+            if not hasattr(self, "_asm"):
+                self._asm = MomentumAssembler(self.shape, self.J, self.m, self.h,
+                                              self.nu, self.dt)
+            ut = [f if torch.is_tensor(f) else torch.as_tensor(np.asarray(f).ravel())
+                  for f in (u, v, w)]
+            self.A_val_t = self._asm.values(*[t.reshape(-1) for t in ut])
+            A = self._asm.csr(self.A_val_t.detach().numpy())
+        else:
+            un = [f.detach().numpy() if torch.is_tensor(f) else np.asarray(f) for f in (u, v, w)]
+            un = [f.reshape(self.shape) for f in un]
+            A = build_momentum_matrix_7point(n, n, n, self.J, self.m, *self.h, *un,
+                                             self.nu, periodic=True)
+            A = (A + sparse.diags(self.J.ravel() / self.dt)).tocsr()
+            self.A_val_t = None
         gamma = self.J / A.diagonal().reshape(self.J.shape)
 
         M = build_conservative_diffusion_matrix(n, n, n, *self.h, self.J, self.m,
                                                 coef=gamma, periodic=True)
-        self.A_pat = csr_pattern(A)
+        if self.exact_A:
+            self.A_pat = (self._asm.rc, (self.N, self.N), self.A_val_t)
+        else:
+            self.A_pat = csr_pattern(A)
         self.M_pat = csr_pattern(M.tocsr())
         self.D = _sp2torch(build_divergence_matrix(self.shape, self.J, self.m, self.h))
         self.G = [_sp2torch(g) for g in
