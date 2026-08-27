@@ -67,6 +67,7 @@ Order of accuracy, verified **separately** so the two cannot mask each other:
 |---|---|---|
 | **spatial**, full solver | periodic, `dt` fixed small so the time error is negligible | **2.02, 2.00, 2.00** (warped); 3.1–3.3 (Cartesian — faster than required) |
 | **temporal**, full solver | against a *same-grid numerical reference*, so the spatial error cancels exactly | **1.91, 1.94, 1.97** (rotational + BDF2) |
+| **energy budget** | 3D Taylor-Green, exact identity −dE/dt = 2νZ | numerical dissipation **1.10%** (SOU) vs **0.56%** (central) |
 
 **Layout follows PICT, which is *collocated*:** pressure and velocity both live at cell
 centres (`Block::CreatePressure` / `CreateVelocity` build tensors on the same grid). Only the
@@ -176,10 +177,12 @@ uv run phase4_poisson.py
 uv run test_phase3_rigorous.py     # 23 checks: warp x viscosity sweeps, independent solver
 uv run test_phase5_piso.py         # 10 checks: projection exactness, cavity, Taylor-Green
 uv run test_phase5_order.py        #  5 checks: temporal order, periodic and walled
+uv run test_spatial_order.py               #  full-solver spatial order (periodic)
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
 uv run --with torch adjoint_piso.py        # adjoint identity + finite-difference gradient check
 
 uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
+uv run run_tgv3d.py && uv run plot_tgv3d.py        # 3D TGV energy/enstrophy budget
 ```
 
 ## Documentation
@@ -190,6 +193,7 @@ uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
 | [`implementation_plan.md`](piso_port/reference/implementation_plan.md) | The original five-phase plan and MMS pass criteria |
 | [`walkthrough.md`](piso_port/reference/walkthrough.md) | Phase 1–3 narrative |
 | [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | PISO design, and the collocated-vs-staggered investigation |
+| [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How the spatial and temporal orders were established — why they must be measured separately, the pitfalls hit on the way, and the energy-budget check that convergence rates cannot give you |
 | [`spatial_discretization.md`](piso_port/reference/spatial_discretization.md) | Every operator — SOU and central convection, conservative diffusion, both divergence operators — with worked numerical examples and the real code |
 | [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | Hooking a network into PISO: the discrete adjoint, why the **velocity** system needs a genuine transpose solve and the **pressure** system does not, and how to handle its singular null space |
 | [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | Staged plan for CNN coupling — six stages, each gated on a gradient check rather than a falling loss |
