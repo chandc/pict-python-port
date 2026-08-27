@@ -200,6 +200,8 @@ uv run test_phase3_rigorous.py             # 23 checks: warp x viscosity, indepe
 uv run test_phase5_piso.py                 # 10 checks: projection, cavity, Taylor-Green
 uv run test_phase5_order.py                #  5 checks: temporal order, periodic and walled
 uv run test_spatial_order.py               #  full-solver spatial order
+uv run test_poiseuille.py                  #  plane Poiseuille vs the analytic parabola
+uv run test_duct.py                        #  square duct vs the Fourier series
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
 
 # --- differentiability
@@ -243,10 +245,10 @@ Honest about what this is and is not:
 - **Deferred correction limited to grid warp ≲ 0.15** — the Picard iteration stops contracting
   beyond it (ratios 0.31 / 0.59 / 0.92 / **1.27** at warp 0.05 / 0.10 / 0.15 / 0.20). It warns
   rather than returning a quietly wrong field
-- **Wall-bounded cases are 1st order in space** — the half-cell boundary-flux stencil. Periodic
-  cases are 2nd order
-- **Chorin projection is the default** (matching PICT), so the default configuration is 1st
-  order in time; `scheme='rotational', time_scheme='bdf2'` opts into 2nd order
+- **Unsteady wall-bounded cases lose time accuracy** to the projection boundary layer. The
+  *spatial* wall treatment is 2nd order (square duct: 2.06, 2.04 against the analytic series)
+- **Chorin projection is the default** (matching PICT). `rotational`+`bdf2` gives 2nd order in
+  time but **diverges on wall-bounded domains** — it is usable only on fully periodic ones
 - **`exact_A` is not fully exact** — $\Gamma = J/A_\text{diag}$, and hence $M$ and $G$, are
   still detached, which is the residual ~2% against finite differences
 - **Closure learning is not demonstrated** — at reachable resolutions the coarse solver's own

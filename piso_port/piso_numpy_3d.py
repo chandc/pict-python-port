@@ -75,7 +75,11 @@ class PISOSolver:
         self.time_scheme = time_scheme
         self.convection = convection
         self.u_prev = None          # for BDF2
-        if any(self.per):
+        if all(self.per):
+            # Only a FULLY periodic domain has no prescribed boundary faces at all. With mixed
+            # periodicity (e.g. walls in y, periodic in x and z) the periodic axes are handled
+            # per-axis inside compute_face_fluxes, and the wall axes still need a real boundary
+            # mode -- overriding it here would silently discard the caller's choice.
             self.boundary_flux_mode = 'periodic'
 
         ns = (n, n, n) if isinstance(n, (int, np.integer)) else tuple(n)
@@ -100,6 +104,10 @@ class PISOSolver:
         self.p = np.zeros(ns)
 
         # Dirichlet velocity boundary values (default: all walls at rest)
+        # Optional body force (3 arrays), added to the momentum RHS. This is PICT's
+        # `velocitySource` hook -- forcing_version=4 in its plane-Poiseuille validation.
+        self.velocity_source = None
+
         self.u_bc = np.zeros(ns)
         self.v_bc = np.zeros(ns)
         self.w_bc = np.zeros(ns)
@@ -177,7 +185,8 @@ class PISOSolver:
             for _ in range(self.momentum_dc_iters):
                 cross = compute_cross_diffusion(phi, J, self.metrics, *self.h,
                                             periodic=self.per)
-                rhs = (J * (trans - gp[comp] + self.nu * cross)).flat[ib] \
+                src = 0.0 if self.velocity_source is None else self.velocity_source[comp]
+                rhs = (J * (trans - gp[comp] + self.nu * cross + src)).flat[ib] \
                       - A_ib @ phi_b
                 sol, info = splinalg.bicgstab(A_ii, rhs, x0=phi.flat[ib], rtol=1e-10, maxiter=5000)
                 if info != 0:

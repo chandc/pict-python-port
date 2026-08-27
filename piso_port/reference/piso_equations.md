@@ -251,10 +251,21 @@ Small, because the pieces already exist:
    $O(\Delta t)$ truncation error becomes the binding constraint and the rotational term buys
    nothing.
 
-**Caveat worth testing first.** An earlier attempt at the incremental form (§5.2, *without* the
-rotational term) showed the pressure drifting without bound — 23 → 99 over ten steps. The
-suspicion is that this is precisely the boundary-condition inconsistency the rotational term
-removes: on a collocated grid the cell-centred gradient used by the predictor and the face
-operator used by the projection are not the same operator, so $\phi$ never settles to zero.
-That hypothesis is worth confirming, since if the drift has a different cause the rotational
-term will not cure it on its own.
+**Caveat — now tested, and the hypothesis was wrong.** An earlier attempt at the incremental
+form showed the pressure drifting without bound (23 → 99 over ten steps). The suspicion recorded
+here was that the rotational term would cure it, being the boundary-condition inconsistency it
+is designed to remove.
+
+**It does not.** Measured on a wall-bounded channel (`test_poiseuille.py` configuration, walls
+in y, periodic in x and z), both variants blow up while Chorin stays stable:
+
+| scheme | Backward Euler | BDF2 |
+|---|---|---|
+| chorin | stable | stable |
+| incremental | diverges by step 39 | diverges by step 58 |
+| rotational | diverges by step 34 | diverges by step 50 |
+
+So **the incremental and rotational projections are usable only on fully periodic domains in
+this port**, where they do deliver 2nd order in time (1.91, 1.94, 1.97). On wall-bounded
+domains, use `scheme='chorin'`. The drift has a different cause than the pressure boundary
+condition, and finding it is open work.

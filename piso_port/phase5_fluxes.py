@@ -90,6 +90,8 @@ def compute_face_fluxes(u, v, w, J, metrics, boundary='from_velocity', periodic=
             f[tuple(sl_hi)] = wrap
         elif boundary == 'impermeable':
             pass                                     # already zero
+        elif boundary == 'periodic':
+            pass                                     # every axis periodic; handled above
         elif boundary == 'from_velocity':
             f[tuple(sl_lo)] = JU[axis][tuple(sl_lo)]
             f[tuple(sl_hi)] = JU[axis][tuple(sl_hi)]

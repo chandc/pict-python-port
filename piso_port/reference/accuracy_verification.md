@@ -140,9 +140,26 @@ rotational   bdf2  errs 6.55e-03  3.13e-03  3.13e-03  2.06e-03   orders 1.06, 0.
 ```
 
 Rotational and incremental beat Chorin by roughly **2×** at the finest `dt`, but no variant
-recovers a clean order. The limiter is **spatial**, not temporal: the prescribed boundary-face
-flux uses a half-cell (1st-order) stencil. Until that is upgraded, wall-bounded runs cannot
-reach 2nd order regardless of the projection variant.
+recovers a clean order.
+
+**A later correction to this section.** It previously attributed the limit to the *spatial*
+boundary-flux stencil. That was wrong, and two wall-bounded validations against analytic
+solutions show why (`test_poiseuille.py`, `test_duct.py`):
+
+| case | walls | result |
+|---|---|---|
+| plane Poiseuille, constant forcing | 2 | L2 error **1.0e-09** at every resolution |
+| plane Poiseuille, sine forcing | 2 | rates **2.16, 2.07** |
+| square duct vs Fourier series | 4 + corners | rates **2.06, 2.04** (full PISO loop) |
+
+**The spatial wall treatment is 2nd order.** The limiter for *unsteady* wall-bounded flow is
+therefore the projection's temporal splitting — its numerical boundary layer — which is what
+the original diagnosis in §4 concluded from the error-versus-wall-distance profile before the
+re-attribution muddied it. The duct is steady, so that effect is absent and 2nd order appears.
+
+Note the parabola case is exact to solver tolerance at *every* resolution: a central second
+difference is exact on quadratics, so the interior error vanishes by construction and anything
+left would be purely the wall treatment. There is nothing left.
 
 ---
 
