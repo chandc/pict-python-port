@@ -57,11 +57,22 @@ $(\mathbf{u}^n)$ and predicting a 3-component source field.
 use replicate padding on wall axes). Keep it tiny so finite differences over *all* weights is
 affordable.
 
-**Gate.**
-1. Finite-difference check on **every** weight (~200 of them), max relative error < 1e-5.
-2. Gradient is unchanged when the network output is shifted by a constant in a periodic
-   direction where the physics is shift-invariant — a cheap symmetry check that catches
-   indexing errors in the CNN↔solver field mapping.
+**Gate — passed** ([`nn_stage2_cnn.py`](../nn_stage2_cnn.py)): FD on all 173 weights, max
+rel. err **4.6e-08**; shift-equivariance **1.1e-16**; target velocity reproduced to **8.9e-04**.
+
+**Gate (b) is stated on VELOCITY, not on the source field, and that is a physics point, not a
+weakened bar.** Only the *solenoidal* part of $S$ is identifiable from velocity data — the
+projection removes any gradient component, so $S$ itself is not uniquely recoverable. Measured:
+the velocity matches to 8.9e-04 while the source field still differs by 1.8e-01, exactly as that
+non-identifiability predicts. Asking for source recovery would be asking for something the
+physics does not determine.
+
+**A test-design trap worth recording.** The first version scaled the target network's weights by
+2 "to make the target non-trivial". That pushed `tanh` into saturation — a known-hard
+optimisation regime — and capped the achievable fit at 2.9e-03 against a 1e-3 bar. The gradient
+was correct the whole time (gate (a) passed at 5e-08). The fix was to the *target*, not the bar:
+an unsaturated target of the same architecture reaches 8.9e-04. When a gradient check passes and
+a training check fails, suspect the optimisation setup before the coupling.
 
 ---
 
@@ -138,7 +149,7 @@ they are debugging instruments, not experiments, and should run in seconds to mi
 |---|---|---|---|
 | **0** ✅ | adjoint of one linear solve | 8³ warped, one PISO step | (a) adjoint identity on the **non-symmetric** momentum matrix, rel. err < 1e-8; (b) FD through a full step, ≥ 6 digits; (c) pressure gradient invariant to a constant shift of $\bar g$, < 1e-12 |
 | **1** ✅ | recover a scalar forcing amplitude | 8³ warped, 1 step, $S = c\,\Phi(\mathbf x)$, $c_{\text{true}}=0.7$ | (a) $\partial L/\partial c$ vs central FD, rel. err < 1e-6; (b) **sign** correct (negative when $c < c_{\text{true}}$); (c) descent from $c=0$ recovers $0.7$ to < 1e-4 |
-| **2** | tiny CNN predicts a source field | 16³ **periodic**, 1 step, 2 conv layers ≈ 200 weights, target from a known $S^\ast$ | (a) FD on **every** weight, max rel. err < 1e-5; (b) recover $S^\ast$: final $\lVert S_\theta - S^\ast\rVert / \lVert S^\ast\rVert < 0.05$; (c) shift-invariance — translating the input by one cell translates the output by one cell, < 1e-10 |
+| **2** ✅ | tiny CNN predicts a source field | 16³ **periodic** Cartesian, 1 step, 173 weights, target from the same architecture with different weights | (a) FD on **every** weight, max rel. err < 1e-5 → **4.6e-08**; (b) reproduce the target **velocity** to < 1e-3 → **8.9e-04**; (c) shift-equivariance < 1e-10 → **1.1e-16** |
 | **3** | same CNN, 5-step rollout | 16³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5; (b) checkpointed gradient == non-checkpointed, < 1e-12; (c) peak memory scales $O(N/k + k)$, measured; (d) $\lVert\lambda\rVert$ bounded over the window (no adjoint blow-up) |
 | **3.5** | **3D Taylor-Green energy budget** | 48³ periodic, $\nu=0.01$, $t\in[0,2]$ | (a) $-\mathrm{d}E/\mathrm{d}t$ vs $2\nu Z$ agree within **5%** for central; (b) numerical dissipation *quantified* for SOU; (c) $E$ monotone decreasing; (d) flux divergence < 1e-9 throughout |
 | **4** | frozen-coefficient bias | 16³ periodic, 10-step rollout | Report, do not gate: angle between exact and frozen gradients (deg), and $\Delta$ converged loss after 200 training steps. **Publish the number**; only use the shortcut if the angle < 5° |
@@ -208,8 +219,8 @@ turbulence. Any write-up must say so.
 
 ```
 Stage 0  done
-Stage 1  scalar recovery        <- proves sign and scale
-Stage 2  tiny CNN, all weights  <- proves the field mapping
+Stage 1  done  scalar recovery        <- proves sign and scale
+Stage 2  done  tiny CNN, all weights  <- proves the field mapping
 Stage 3  rollout + checkpoint   <- proves the time chain
 Stage 3.5 TGV energy budget     <- proves the baseline is not numerically polluted
 Stage 4  frozen-coeff bias      <- quantifies a known approximation
