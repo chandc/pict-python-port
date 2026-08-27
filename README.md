@@ -1,8 +1,9 @@
-# Learning PICT: a pure-Python PISO solver
+# Learning PICT: a pure-Python, differentiable PISO solver
 
 An educational, from-scratch re-implementation of the numerical core of
 **[PICT](https://github.com/tum-pbs/PICT)** in plain Python/NumPy/SciPy — written to
-*understand* a production CFD solver by rebuilding it, one validated phase at a time.
+*understand* a production CFD solver by rebuilding it, one validated phase at a time, and then
+making it differentiable so a neural network can be trained through it.
 
 > **This is not PICT, and it is not affiliated with its authors.** No PICT source is
 > redistributed here. Where this port mirrors a PICT design decision, the corresponding
@@ -13,204 +14,244 @@ An educational, from-scratch re-implementation of the numerical core of
 
 ## What is PICT?
 
-PICT is a **differentiable, GPU-accelerated, multi-block PISO solver** for incompressible
-fluid dynamics, from the TUM Physics-based Simulation group — published in the *Journal of
+PICT is a **differentiable, GPU-accelerated, multi-block PISO solver** for incompressible fluid
+dynamics, from the TUM Physics-based Simulation group — published in the *Journal of
 Computational Physics*
 ([paper](https://doi.org/10.1016/j.jcp.2025.114433) · [arXiv](https://arxiv.org/abs/2505.16992)).
 
-What makes it notable:
-
-- **2nd-order PISO** on flexible, deformed **multi-block curvilinear** domains
-- **Differentiable end-to-end** — implemented as PyTorch CUDA extensions, so gradients flow
-  *through the solver*, enabling simulation-coupled learning (e.g. learned turbulence models
-  trained against the true solver response rather than a surrogate)
+- **2nd-order PISO** on deformed **multi-block curvilinear** domains
+- **Differentiable end-to-end** — PyTorch CUDA extensions, so gradients flow *through the
+  solver*, enabling simulation-coupled learning
 - ~18k lines of C++/CUDA, most of it in one 7k-line kernel file
 
-That last point is the motivation for this repository. The physics is buried in hand-tuned
-CUDA; the *ideas* are hard to see. So: rebuild them in NumPy, where every operator is three
-readable lines, and validate each one before moving on.
+That last point is the motivation. The physics is buried in hand-tuned CUDA; the *ideas* are
+hard to see. So: rebuild them in NumPy, where every operator is a few readable lines, and
+validate each one before moving on.
+
+---
+
+## Headline results
+
+| | measured |
+|---|---|
+| Discrete Geometric Conservation Law | **7e-13** (machine precision) |
+| Spatial order, full solver | **2.02, 2.00, 2.00** (warped periodic) |
+| Temporal order, full solver | **1.91, 1.94, 1.97** (rotational projection + BDF2) |
+| Flux divergence after projection | **~1e-12 – 1e-10** |
+| 2D cavity vs Ghia et al. Re=100 | RMS deviation **0.0033** |
+| Numerical dissipation (3D TGV) | **1.10%** SOU vs **0.56%** central, converging at 2nd order |
+| Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
+| Automated checks | **66** across eleven scripts |
+
+<p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
+
+---
 
 ## The process
 
-### Detour first: a simple FEM Poisson solver
+### A detour first: FEM Poisson
 
-Before touching PISO, we built a small **finite-element Poisson solver** from scratch
-([`fem_poisson/`](fem_poisson/)) as a warm-up — assembling stiffness matrices, imposing
-boundary conditions, and confirming the expected convergence under mesh refinement.
+Before touching PISO we built a small **finite-element Poisson solver**
+([`fem_poisson/`](fem_poisson/)) as a warm-up, confirming the expected convergence under mesh
+refinement.
 
 <p align="center"><img src="images/poisson_fem_solution.png" width="46%"> <img src="images/error_vs_dof.png" width="46%"></p>
 
-This established the working method that the rest of the project runs on: **never trust an
-operator you have not convergence-tested.** A CNN-vs-FEM comparison
-([`cnn_fem_poisson.py`](fem_poisson/cnn_fem_poisson.py)) closed out the detour.
+This established the working method the whole project runs on: **never trust an operator you
+have not convergence-tested.**
 
-<p align="center"><img src="images/cnn_fem_comparison.png" width="70%"></p>
+### Then the port: five phases, each gated by MMS
 
-### Then the pivot: port PICT's PISO core
+FEM Poisson is a different discretisation from what PICT does, so we pivoted to porting the
+real thing — [`piso_port/`](piso_port/) — with each phase gated by the Method of Manufactured
+Solutions on a deliberately warped grid.
 
-FEM Poisson is a different discretisation from what PICT actually does (finite-volume PISO on
-curvilinear grids), so we pivoted to porting the real thing —
-[`piso_port/`](piso_port/) — in five phases, each gated by the **Method of Manufactured
-Solutions** on a deliberately warped grid.
-
-| Phase | What it builds | Validation | Result |
-|---|---|---|---|
-| 1 | Grid metrics, Jacobian, GCL | Wavy-grid MMS vs exact metrics | rate **2.05**, GCL **7e-13** |
-| 2 | Curvilinear gradient & divergence | Trigo-exponential MMS | rates **2.07 / 2.12** |
-| 3 | Momentum matrix (SOU advection + diffusion) | 3D Taylor-Green | rates **2.15 / 2.46** |
-| 4 | Pressure Poisson (27-pt, deferred correction) | Trigo-exponential Laplacian | rates **2.14 / 2.30** |
-| 5 | PISO orchestration | Lid-driven cavity, Taylor-Green | divergence **~1e-10** |
-
-Order of accuracy, verified **separately** so the two cannot mask each other:
-
-| | how measured | result |
+| Phase | What it builds | Result |
 |---|---|---|
-| **spatial**, full solver | periodic, `dt` fixed small so the time error is negligible | **2.02, 2.00, 2.00** (warped); 3.1–3.3 (Cartesian — faster than required) |
-| **temporal**, full solver | against a *same-grid numerical reference*, so the spatial error cancels exactly | **1.91, 1.94, 1.97** (rotational + BDF2) |
-| **energy budget** | 3D Taylor-Green, exact identity −dE/dt = 2νZ | numerical dissipation **1.10%** (SOU) vs **0.56%** (central) |
-| energy budget, **grid convergence** | same, at 32³ / 48³ / 64³ | numerical dissipation itself converges at **2.01, 2.00** |
+| 1 | Grid metrics, Jacobian, GCL | rate **2.05**, GCL **7e-13** |
+| 2 | Curvilinear gradient & divergence | **2.07 / 2.12**, holds to warp 0.20 |
+| 3 | Momentum matrix (SOU or central + diffusion) | **2.15 / 2.46** |
+| 4 | Pressure Poisson (27-pt, deferred correction) | **2.14 / 2.30** |
+| 5 | PISO orchestration | flux divergence **~1e-10** |
 
-**Layout follows PICT, which is *collocated*:** pressure and velocity both live at cell
-centres (`Block::CreatePressure` / `CreateVelocity` build tensors on the same grid). Only the
-metric transforms are face-staggered. Face fluxes are a *derived* quantity, interpolated from
-cell-centred contravariant components — and PICT uses **no Rhie–Chow interpolation**.
-Consistency comes instead from expressing divergence and the pressure operator on the *same*
-faces.
+**Layout follows PICT, which is *collocated*:** pressure and velocity both at cell centres;
+only the metric transforms are face-staggered. Face fluxes are *derived*, and PICT uses **no
+Rhie–Chow interpolation** — consistency comes from expressing divergence and the pressure
+operator on the *same* faces.
 
-## Results
+### Then: capability beyond the original plan
 
-3D lid-driven cavity on a warped curvilinear grid, at steady state:
+- **Periodic boundaries** on any axis — GCL holds at **1.6e-14** on a fully periodic warped grid
+- **Non-cubic grids** — a thin periodic spanwise direction turns the 3D solver into a genuine
+  2D cavity, which is what makes the Ghia comparison apples-to-apples
+- **Rotational projection + BDF2** — recovers 2nd order in time
+- **Central convection** alongside 2nd-order upwind
+- **Differentiability** — discrete adjoint through the whole step, verified against finite
+  differences
+
+---
+
+## Validation gallery
+
+3D lid-driven cavity on a warped curvilinear grid:
 
 <p align="center"><img src="images/cavity_flow.png" width="88%"></p>
 <p align="center"><img src="images/cavity_flow_3d.png" width="88%"></p>
 
-The 3D streamlines are integrated in *computational* space (`dξⁱ/ds = Uⁱ/|U|`), where the
-grid is uniform and interpolation is exact, then mapped back — avoiding any need to invert
-the warped physical→computational map.
+3D Taylor-Green energy budget — the exact periodic identity $-\mathrm{d}E/\mathrm{d}t = 2\nu Z$
+turns any gap into a direct measure of the scheme's numerical dissipation:
 
-### Against the Ghia benchmark
+<p align="center"><img src="images/tgv3d_E_Z.png" width="88%"></p>
+<p align="center"><img src="images/tgv3d_resolution.png" width="88%"></p>
 
-<p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
+---
 
-Ghia et al. (1982) is a **2D** benchmark, so the honest comparison runs a 2D cavity — done here
-by making the spanwise direction **periodic** with a handful of cells. That removes the end
-walls entirely, the solution is span-invariant (measured span-variation ~2e-09), and the
-configuration is then exactly Ghia's. In-plane resolution matches theirs at 129x129.
+## Differentiability: coupling a CNN to PISO
 
-| case | u_min | Ghia | v_max | Ghia | v_min | Ghia | RMS dev (u, v) |
-|---|---|---|---|---|---|---|---|
-| Re 100, SOU | -0.2138 | -0.2109 | 0.1834 | 0.1753 | -0.2531 | -0.2453 | 0.0033, 0.0152 |
-| Re 100, central | -0.2134 | -0.2109 | 0.1806 | 0.1753 | -0.2489 | -0.2453 | 0.0042, 0.0132 |
-| Re 400, SOU | -0.3117 | -0.3273 | 0.2891 | 0.3020 | -0.4189 | -0.4499 | 0.0137, 0.0310 |
+The adjoint of a PISO step is dominated by two linear solves that behave **completely
+differently**, and getting that distinction wrong is the classic failure:
 
-Re 100 lands essentially on the benchmark. Re 400 is close but visibly under-predicts the
-extrema — steeper gradients at higher Reynolds need more than 129 cells for a 2nd-order scheme,
-and Ghia used a coupled multigrid method on the same mesh.
-
-**This also settled an earlier open question.** Sampling the mid-plane of a *walled 3D* cavity
-gave an RMS deviation of 0.0277 that refinement would not remove, and the residual sat in the
-flow core rather than at the walls — which pointed at 3D-vs-2D physics rather than our
-discretisation, but could not be proven without a true 2D run. Running the genuine 2D case
-drops it to **0.0033, an 8x improvement**, confirming the diagnosis: the earlier gap was the
-end walls, not the numerics.
-
-Flux divergence held at **1.5e-12** throughout, and the two convection schemes agree closely at
-Re 100 (cell Peclet ~0.8, well inside central's stable range).
-
-## Things this exercise surfaced
-
-The interesting output was less the code than the failure modes. Each of these was measured,
-not guessed:
-
-- **A hang that was really a symmetry bug.** The Poisson solve never terminated. Cause: the
-  matrix was not symmetric (cell-centred coefficients on both neighbours, plus identity-row
-  Dirichlet stamping), so CG *cannot* converge — it ran to `maxiter = 10N` with a residual
-  worse than the zero guess. Fixing symmetry took it from non-terminating to **0.24 s**.
-- **A test that passed for the wrong reason.** Phase 3 hit 2nd order only because it used a
-  grid warp 10× milder than Phase 1's. At realistic skew the rate collapsed to **0.42**. The
-  implicit matrix dropped the Jacobian weighting while the deferred correction kept it, so the
-  two halves did not reconstruct the same Laplacian — the split's error *did not converge at
-  all*.
-- **A suite that reported 23/23 while containing garbage.** The convergence check looked only
-  at the last refinement rate, so a blown-up intermediate point slipped through. Tightening it
-  exposed a second hole (a blown-up *first* point still passed as monotone). The criterion now
-  requires all rates in [1.8, 4.0] plus monotone decrease, meta-tested against five known
-  failure shapes.
-- **A "remedy" that was implemented, measured, and deleted.** Deferred correction stops
-  contracting past warp ≈ 0.18 (ratios 0.31 / 0.59 / 0.92 / **1.27**). The over-relaxed
-  implicit-boost fix leaves the fixed point unchanged and merely drives the iteration toward
-  the identity — converging *slower*. Removed rather than shipped.
-- **A boundary default that quietly destroyed the solution.** Zeroing boundary face fluxes
-  gave a discrete divergence of **1.8e+01** on an *exactly* divergence-free field; the
-  projection then "corrected" that phantom divergence and wrecked the interior.
-
-## Second-order in time
-
-The default scheme is non-incremental (Chorin) projection, matching PICT's
-`apply_pressure_gradient = False`. That is **1st order**, and no time integrator repairs it —
-the splitting error is O(Δt). Adding the **rotational** correction
-
-$$p^{n+1} = p^n + \phi - \nu\,(\nabla\cdot\mathbf{u}^{*})$$
-
-together with BDF2 recovers 2nd order. Measured against a same-grid numerical reference
-(so the spatial error cancels exactly):
-
-| scheme | time | observed order |
+| | velocity ($A$) | pressure ($M$) |
 |---|---|---|
-| chorin | BE | 1.01 |
-| chorin | BDF2 | 1.08 &nbsp;*(splitting-limited, as theory says)* |
-| rotational | BDF2 | **1.91, 1.94, 1.97** |
+| symmetric | **no** — SOU is one-sided (measured $\lVert A - A^{\mathsf T}\rVert = 12.4$) | **yes**, exactly |
+| adjoint operator | $A^{\mathsf T}$, a *different* matrix | $M$ itself |
+| Krylov method | BiCGStab both ways | CG both ways |
+| preconditioner | reuse $LU$ **transposed** | reuse verbatim |
+| singular | no | **yes** — constant null space |
 
-Full derivation in [`piso_port/reference/piso_equations.md`](piso_port/reference/piso_equations.md).
+Forgetting the transpose on the momentum matrix is a **24.5% error**, not a rounding one.
+
+Built and verified in six stages, each gated on a **gradient check, not a falling loss**:
+
+| Stage | What | Result |
+|---|---|---|
+| 0 | linear-solve adjoint | FD to ~7 digits; null-space invariance 8.9e-16 |
+| 1 | one step, one scalar | recovers $c_{\text{true}}=0.7$ to 10 digits |
+| 2 | tiny CNN, 173 weights | FD on **every** weight: **4.6e-08** |
+| 3 | 5-step rollout + checkpointing | checkpointed ≡ non-checkpointed **exactly**; 17× memory saving |
+| 4 | frozen-coefficient bias | angle 0.4° **but converged loss 25% worse** → use `exact_A` |
+| 5a | a-priori SGS regression | held-out correlation **0.850** |
+| 5b | a-posteriori closure training | (b),(c) pass; (a) unreachable — see below |
+
+---
+
+## What this exercise actually surfaced
+
+The most useful output was not the code but the failure modes. Every one was **measured**, and
+several overturned a criterion we had written ourselves.
+
+**A hang that was really a symmetry bug.** The Poisson solve never terminated. The matrix was
+not symmetric, so CG *cannot* converge — it ran to `maxiter = 10N` with a residual worse than
+the zero guess. Fixing symmetry took it from non-terminating to **0.24 s**.
+
+**A test that passed for the wrong reason.** Phase 3 hit 2nd order only because it used a grid
+warp 10× milder than Phase 1's. At realistic skew the rate collapsed to **0.42**: the implicit
+matrix dropped the Jacobian weighting while the deferred correction kept it, so the split's
+error did not converge at all.
+
+**A suite reporting 23/23 while containing garbage.** The convergence check looked only at the
+last refinement rate, so a blown-up intermediate point slipped through. Tightening it exposed a
+second hole. The criterion now requires all rates in a band *plus* monotone decrease,
+meta-tested against five known failure shapes.
+
+**A remedy implemented, measured, and deleted.** The over-relaxed implicit-boost fix for the
+deferred-correction warp limit leaves the fixed point unchanged and merely drives the iteration
+toward the identity — converging *slower*. Removed rather than shipped.
+
+**A boundary default that quietly destroyed the solution.** Zeroing boundary face fluxes gave a
+discrete divergence of **1.8e+01** on an *exactly* divergence-free field; the projection then
+"corrected" that phantom divergence and wrecked the interior.
+
+**A gradient criterion that was insufficient (Stage 4).** The plan said to accept the
+frozen-coefficient shortcut if the gradient angle is under 5°. The angle is **0.4°** — yet the
+converged loss is **25% worse**. A small systematic bias barely tilts the gradient at any one
+point but accumulates over the optimisation. The converged-loss comparison is the binding test;
+the angle is only a cheap screen.
+
+**An improvement target that was unreachable (Stage 5b).** Gate (a) wanted a 30% trajectory
+improvement and got 2.7%. Measuring the **oracle** — a rollout with the *exact* sub-grid force —
+gives **−0.3%**: no closure, however perfect, can beat that. The sub-grid term is ~6% of the
+tendency while the 16³ coarse solver carries several percent of its own discretisation error.
+The bar was miscalibrated, not missed. And since the trained model *beats* the oracle, it is
+compensating **numerical** error rather than learning physics — the exact confound flagged when
+the energy-budget stage was inserted, now demonstrated rather than hypothesised.
+
+**A wrong prediction, corrected by measurement.** We expected Chorin + BDF2 to reach 2nd order
+in time. It does not and cannot — the non-incremental splitting error is O(Δt) and no
+integrator repairs it. The test now asserts 1st order there deliberately.
+
+---
 
 ## Running it
 
-Requires `numpy`, `scipy`, `sympy`, `matplotlib`. We use [uv](https://docs.astral.sh/uv/):
+Requires `numpy`, `scipy`, `sympy`, `matplotlib`; the differentiable parts need `torch`.
 
 ```bash
 cd piso_port
 
-uv run phase1_grid_metrics.py      # each phase self-validates via MMS
+# --- per-phase MMS validation
+uv run phase1_grid_metrics.py
 uv run phase2_operators.py
 uv run phase3_momentum.py
 uv run phase4_poisson.py
 
-uv run test_phase3_rigorous.py     # 23 checks: warp x viscosity sweeps, independent solver
-uv run test_phase5_piso.py         # 10 checks: projection exactness, cavity, Taylor-Green
-uv run test_phase5_order.py        #  5 checks: temporal order, periodic and walled
-uv run test_spatial_order.py               #  full-solver spatial order (periodic)
+# --- verification suites
+uv run test_phase3_rigorous.py             # 23 checks: warp x viscosity, independent solver
+uv run test_phase5_piso.py                 # 10 checks: projection, cavity, Taylor-Green
+uv run test_phase5_order.py                #  5 checks: temporal order, periodic and walled
+uv run test_spatial_order.py               #  full-solver spatial order
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
-uv run --with torch adjoint_piso.py        # adjoint identity + finite-difference gradient check
 
-uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
-uv run run_tgv3d.py && uv run plot_tgv3d.py        # 3D TGV energy/enstrophy budget
-uv run run_tgv_resolution.py && uv run plot_tgv_resolution.py   # 32/48/64 study
+# --- differentiability
+uv run --with torch adjoint_piso.py            # adjoint identity + FD gradient check
+uv run --with torch nn_stage1_scalar.py        # scalar recovery
+uv run --with torch nn_stage2_cnn.py           # FD on every weight
+uv run --with torch nn_stage3_rollout.py       # rollout + checkpointing
+uv run --with torch nn_stage4_bias.py          # frozen-coefficient bias
+
+# --- closure learning (generates data first, a few minutes)
+uv run make_sgs_data.py && uv run --with torch nn_stage5a_apriori.py
+uv run make_sgs_trajectory.py && uv run --with torch nn_stage5b_aposteriori.py
+
+# --- figures
+uv run run_cavity.py     && uv run plot_cavity.py
+uv run run_cavity_2d.py  && uv run plot_ghia_2d.py
+uv run run_tgv3d.py      && uv run plot_tgv3d.py
 ```
+
+---
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [`piso_equations.md`](piso_port/reference/piso_equations.md) | Every equation as implemented, with PICT line-number cross-references; the non-orthogonal lag, its treatment, and the rotational correction |
-| [`implementation_plan.md`](piso_port/reference/implementation_plan.md) | The original five-phase plan and MMS pass criteria |
-| [`walkthrough.md`](piso_port/reference/walkthrough.md) | Phase 1–3 narrative |
-| [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | PISO design, and the collocated-vs-staggered investigation |
-| [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How the spatial and temporal orders were established — why they must be measured separately, the pitfalls hit on the way, and the energy-budget check that convergence rates cannot give you |
-| [`spatial_discretization.md`](piso_port/reference/spatial_discretization.md) | Every operator — SOU and central convection, conservative diffusion, both divergence operators — with worked numerical examples and the real code |
-| [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | Hooking a network into PISO: the discrete adjoint, why the **velocity** system needs a genuine transpose solve and the **pressure** system does not, and how to handle its singular null space |
-| [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | Staged plan for CNN coupling — six stages, each gated on a gradient check rather than a falling loss |
-| [`piso_backprop_math.md`](piso_port/reference/piso_backprop_math.md) · [`adjoint_method.md`](piso_port/reference/adjoint_method.md) | Earlier differentiability notes |
+| [`piso_equations.md`](piso_port/reference/piso_equations.md) | Every equation as implemented, with PICT line-number cross-references; the non-orthogonal lag and the rotational correction |
+| [`spatial_discretization.md`](piso_port/reference/spatial_discretization.md) | Each operator — SOU and central convection, conservative diffusion, both divergence operators — with worked numerical examples *and the real code* |
+| [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How spatial and temporal orders were established, why they must be measured separately, and the energy-budget check convergence rates cannot give you |
+| [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | The discrete adjoint: why velocity needs a genuine transpose solve, pressure does not, and how to handle its singular null space |
+| [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | The six-stage CNN coupling plan, with test problems, acceptance criteria, and the two criteria the measurements overturned |
+| [`implementation_plan.md`](piso_port/reference/implementation_plan.md) · [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The original plan, the Phase 1–3 narrative, and the collocated-vs-staggered investigation |
+
+---
 
 ## Status and limitations
 
-Honest about what this is:
+Honest about what this is and is not:
 
-- Single block only — no multi-block coupling
-- CPU/NumPy — no GPU, no autodiff (PICT's headline feature)
-- Deferred correction limited to grid warp ≲ 0.15; it warns rather than returning junk
-- Wall treatment is 1st order (half-cell boundary-flux stencil), so wall-bounded runs do not
-  reach 2nd order even with the rotational term
-- Not validated against a 3D cavity benchmark yet
+- **Single block**, no multi-block coupling
+- **CPU/NumPy** — no GPU; differentiability is via a small PyTorch layer, not CUDA extensions
+- **Deferred correction limited to grid warp ≲ 0.15** — the Picard iteration stops contracting
+  beyond it (ratios 0.31 / 0.59 / 0.92 / **1.27** at warp 0.05 / 0.10 / 0.15 / 0.20). It warns
+  rather than returning a quietly wrong field
+- **Wall-bounded cases are 1st order in space** — the half-cell boundary-flux stencil. Periodic
+  cases are 2nd order
+- **Chorin projection is the default** (matching PICT), so the default configuration is 1st
+  order in time; `scheme='rotational', time_scheme='bdf2'` opts into 2nd order
+- **`exact_A` is not fully exact** — $\Gamma = J/A_\text{diag}$, and hence $M$ and $G$, are
+  still detached, which is the residual ~2% against finite differences
+- **Closure learning is not demonstrated** — at reachable resolutions the coarse solver's own
+  discretisation error dominates the sub-grid term, so there is nothing for a closure to learn.
+  The adjoint machinery is verified; the *physics* of closure is not
 
 ## Licence & attribution
 
