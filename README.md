@@ -61,6 +61,13 @@ Solutions** on a deliberately warped grid.
 | 4 | Pressure Poisson (27-pt, deferred correction) | Trigo-exponential Laplacian | rates **2.14 / 2.30** |
 | 5 | PISO orchestration | Lid-driven cavity, Taylor-Green | divergence **~1e-10** |
 
+Order of accuracy, verified **separately** so the two cannot mask each other:
+
+| | how measured | result |
+|---|---|---|
+| **spatial**, full solver | periodic, `dt` fixed small so the time error is negligible | **2.02, 2.00, 2.00** (warped); 3.1–3.3 (Cartesian — faster than required) |
+| **temporal**, full solver | against a *same-grid numerical reference*, so the spatial error cancels exactly | **1.91, 1.94, 1.97** (rotational + BDF2) |
+
 **Layout follows PICT, which is *collocated*:** pressure and velocity both live at cell
 centres (`Block::CreatePressure` / `CreateVelocity` build tensors on the same grid). Only the
 metric transforms are face-staggered. Face fluxes are a *derived* quantity, interpolated from
@@ -183,7 +190,10 @@ uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
 | [`implementation_plan.md`](piso_port/reference/implementation_plan.md) | The original five-phase plan and MMS pass criteria |
 | [`walkthrough.md`](piso_port/reference/walkthrough.md) | Phase 1–3 narrative |
 | [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | PISO design, and the collocated-vs-staggered investigation |
-| [`piso_backprop_math.md`](piso_port/reference/piso_backprop_math.md) · [`adjoint_method.md`](piso_port/reference/adjoint_method.md) | Differentiability notes — how gradients pass through a PISO step |
+| [`spatial_discretization.md`](piso_port/reference/spatial_discretization.md) | Every operator — SOU and central convection, conservative diffusion, both divergence operators — with worked numerical examples and the real code |
+| [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | Hooking a network into PISO: the discrete adjoint, why the **velocity** system needs a genuine transpose solve and the **pressure** system does not, and how to handle its singular null space |
+| [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | Staged plan for CNN coupling — six stages, each gated on a gradient check rather than a falling loss |
+| [`piso_backprop_math.md`](piso_port/reference/piso_backprop_math.md) · [`adjoint_method.md`](piso_port/reference/adjoint_method.md) | Earlier differentiability notes |
 
 ## Status and limitations
 
