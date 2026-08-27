@@ -26,13 +26,31 @@ TOL = 1e-13
 
 
 def _solve(A, b, symmetric, transpose=False):
+    """
+    Solve, with a fallback for BiCGStab breakdown.
+
+    BiCGStab can break down (scipy `info < 0`) on the non-symmetric momentum system -- it
+    happens in practice during training, when the adjoint RHS becomes nearly orthogonal to the
+    shadow residual. PICT carries the same machinery for the same reason (`double_fallback`,
+    `BiCG_precondition_fallback`, `return_best_result`). LGMRES does not break down the same
+    way, so it is the fallback here.
+
+    A zero RHS is short-circuited: the answer is zero, but an iterative solver handed an
+    all-zero right-hand side reports non-convergence rather than returning it.
+    """
+    if not np.any(b):
+        return np.zeros_like(b)
     op = A.T if transpose else A
     if symmetric:                       # M^T == M, so `transpose` is a no-op here by design
         x, info = spl.cg(op, b, rtol=TOL, maxiter=50000)
-    else:
-        x, info = spl.bicgstab(op, b, rtol=TOL, maxiter=50000)
+        if info != 0:
+            raise RuntimeError(f"symmetric solve failed, info={info}")
+        return x
+    x, info = spl.bicgstab(op, b, rtol=TOL, maxiter=50000)
     if info != 0:
-        raise RuntimeError(f"adjoint/forward solve failed, info={info}")
+        x, info = spl.lgmres(op, b, rtol=TOL, maxiter=5000)      # breakdown fallback
+    if info != 0:
+        raise RuntimeError(f"non-symmetric solve failed after fallback, info={info}")
     return x
 
 
