@@ -68,6 +68,7 @@ Order of accuracy, verified **separately** so the two cannot mask each other:
 | **spatial**, full solver | periodic, `dt` fixed small so the time error is negligible | **2.02, 2.00, 2.00** (warped); 3.1–3.3 (Cartesian — faster than required) |
 | **temporal**, full solver | against a *same-grid numerical reference*, so the spatial error cancels exactly | **1.91, 1.94, 1.97** (rotational + BDF2) |
 | **energy budget** | 3D Taylor-Green, exact identity −dE/dt = 2νZ | numerical dissipation **1.10%** (SOU) vs **0.56%** (central) |
+| energy budget, **grid convergence** | same, at 32³ / 48³ / 64³ | numerical dissipation itself converges at **2.01, 2.00** |
 
 **Layout follows PICT, which is *collocated*:** pressure and velocity both live at cell
 centres (`Block::CreatePressure` / `CreateVelocity` build tensors on the same grid). Only the
@@ -183,6 +184,7 @@ uv run --with torch adjoint_piso.py        # adjoint identity + finite-differenc
 
 uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
 uv run run_tgv3d.py && uv run plot_tgv3d.py        # 3D TGV energy/enstrophy budget
+uv run run_tgv_resolution.py && uv run plot_tgv_resolution.py   # 32/48/64 study
 ```
 
 ## Documentation

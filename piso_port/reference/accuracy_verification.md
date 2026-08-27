@@ -216,6 +216,27 @@ Both are formally 2nd order and both pass every MMS test, yet SOU dissipates abo
 much — the price of the upwind bias that buys its stability. Neither number is visible in a
 convergence rate. Run `run_tgv3d.py` then `plot_tgv3d.py`.
 
-Caveat: at ν = 0.01 enstrophy peaks at t = 0 and decays, so this is a resolved laminar decay,
-not turbulence. It validates the energy-budget machinery and the relative dissipation of the
-two schemes, nothing more.
+### Grid convergence of the budget
+
+Run at three resolutions (central convection) to confirm 48³ is adequate:
+
+| N | E(t=2) | mean numerical dissipation | E vs 64³ |
+|---|---|---|---|
+| 32³ | 6.850e-04 | 1.27 % | 1.64 % |
+| **48³** | **6.768e-04** | **0.56 %** | **0.42 %** |
+| 64³ | 6.739e-04 | 0.31 % | — |
+
+Two things follow. First, the **numerical dissipation itself converges at 2nd order** — rates
+**2.01** and **2.00** — which is an independent confirmation of the spatial order reached by a
+completely different route from the MMS tests: measured from a *physical invariant* rather than
+from a manufactured solution. Second, 48³ is converged for this purpose: against 64³ the energy
+curve differs by ≤ 0.07 % and enstrophy by ≤ 0.26 %, well below the ~1 % effect being measured,
+so the SOU-vs-central comparison is not a resolution artifact.
+
+### Caveat: this is not turbulence
+
+At ν = 0.01 enstrophy **peaks at t = 0** and decays monotonically — there is no vortex
+stretching and no cascade. In the canonical TGV at Re = 1600, enstrophy rises to a peak near
+t ≈ 9, and that peak *is* the cascade; reaching it needs ~256³, roughly two orders of magnitude
+more work than a NumPy solver can carry. What this validates is the energy-budget machinery and
+the relative dissipation of the two convection schemes — nothing about cascade prediction.
