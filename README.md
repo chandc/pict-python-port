@@ -151,6 +151,8 @@ uv run phase4_poisson.py
 uv run test_phase3_rigorous.py     # 23 checks: warp x viscosity sweeps, independent solver
 uv run test_phase5_piso.py         # 10 checks: projection exactness, cavity, Taylor-Green
 uv run test_phase5_order.py        #  5 checks: temporal order, periodic and walled
+uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
+uv run --with torch adjoint_piso.py        # adjoint identity + finite-difference gradient check
 
 uv run run_cavity.py && uv run plot_cavity.py     # reproduce the figures
 ```
