@@ -35,9 +35,12 @@ def _one_step(sim, net, u, v, w, rebuild=True):
 
 
 def rollout(sim, net, u0, v0, w0, nsteps, checkpoint_every=None, rebuild=True):
-    u, v, w = (torch.as_tensor(np.asarray(f).ravel()) for f in (u0, v0, w0))
+    def _as_vec(f):
+        return f.reshape(-1) if torch.is_tensor(f) else torch.as_tensor(np.asarray(f).ravel())
+    u, v, w = (_as_vec(f) for f in (u0, v0, w0))
     if not rebuild:
-        sim.build(*(np.asarray(f).reshape(sim.shape) for f in (u0, v0, w0)))
+        sim.build(*((f.detach().numpy() if torch.is_tensor(f) else np.asarray(f)).reshape(sim.shape)
+                    for f in (u0, v0, w0)))
     if checkpoint_every is None:
         for _ in range(nsteps):
             u, v, w = _one_step(sim, net, u, v, w, rebuild)

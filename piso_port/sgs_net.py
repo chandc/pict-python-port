@@ -33,3 +33,27 @@ class TinySGSNet(nn.Module):
             t = f if torch.is_tensor(f) else torch.as_tensor(f)
             cols.append(t.reshape(shape))
         return self(torch.stack(cols).unsqueeze(0)).squeeze(0).reshape(3, -1)
+
+
+class SGSNet(nn.Module):
+    """
+    Larger network for the closure task. Stage 2's 173-parameter net was sized so that finite
+    differences on EVERY weight stayed affordable; that constraint does not apply here, where
+    the gate is statistical (correlation on held-out data) rather than exact.
+
+    Still deliberately small -- ~10k parameters. A closure that only works with a large network
+    on 24 snapshots would be memorising, and the held-out correlation is what would catch it.
+    """
+
+    def __init__(self, width=24, depth=3):
+        super().__init__()
+        layers, c_in = [], 3
+        for _ in range(depth):
+            layers += [nn.Conv3d(c_in, width, 3, padding=1, padding_mode="circular"),
+                       nn.GELU()]
+            c_in = width
+        layers += [nn.Conv3d(width, 3, 1)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)

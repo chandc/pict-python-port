@@ -163,11 +163,44 @@ trajectory matches the filtered fine-grid trajectory over $N$ steps. This is the
 configuration and the whole point of differentiability — the network sees the solver's actual
 response rather than a one-step surrogate.
 
-**Gate.**
-- 5a: correlation with the true SGS term > 0.8 on held-out data.
-- 5b: coarse-grid trajectory error beats both (i) no model and (ii) the a-priori-trained model
-  used a-posteriori. If 5b does not beat 5a's model, the differentiability is buying nothing
-  and that should be reported plainly rather than buried.
+**5a — passed** ([`nn_stage5a_apriori.py`](../nn_stage5a_apriori.py)): held-out correlation
+**0.850**, against a trivial "SGS ∝ resolved velocity" baseline of **−0.21**. So the mapping is
+learnable and the network has the capacity.
+
+**5b — one gate failed, and the failure is the result** ([`nn_stage5b_aposteriori.py`](../nn_stage5b_aposteriori.py)):
+
+| | 6-step | 30-step |
+|---|---|---|
+| no model | 0.0589 | 0.0774 |
+| **exact SGS force (oracle)** | **0.0591** | **0.0779** |
+| a-priori (5a) model, used a-posteriori | 0.0591 | 0.0781 |
+| a-posteriori trained | **0.0573** | **0.0737** |
+
+**The oracle is the key row, and it is why gate (a) was never reachable.** Injecting the
+*exact* sub-grid force changes the error by −0.3% — no closure, however perfect, can beat that.
+The sub-grid term is only ~6% of the tendency $\partial u/\partial t$, while the 16³ coarse
+solver carries several percent of its own discretisation error. **The numerics dominate the
+physics the closure is meant to supply.**
+
+Two conclusions follow, both worth stating plainly:
+
+1. **The 30% bar was miscalibrated**, not merely missed. An absolute improvement target is
+   meaningless without knowing how much improvement is available; the oracle measures that and
+   should have been part of the criterion from the start.
+2. **The trained model beats the oracle** (2.7% vs −0.3%). A closure cannot out-model the exact
+   sub-grid term, so it is compensating **coarse-grid numerical error**, not learning physics —
+   precisely the confound Stage 3.5 flagged, now demonstrated rather than hypothesised.
+
+Gate (b) *does* pass: a-posteriori training beats the a-priori model (0.0573 vs 0.0591), which
+is the core claim for differentiable-solver training. Note also that a **0.85 a-priori
+correlation produced no a-posteriori benefit at all** — the a-priori model is marginally worse
+than no model. That disconnect is well known in the LES closure literature and is reproduced
+here.
+
+**What a meaningful closure test needs:** higher Reynolds number so the sub-grid term carries
+more of the dynamics, a larger filter ratio, and a coarse discretisation whose own error is well
+below the sub-grid contribution. None is reachable at the resolutions a NumPy solver can afford
+— a limitation of this port, not of the method.
 
 **Test case.** Decaying Taylor-Green on a fully periodic grid — we already have exact
 solutions, periodic BCs, and verified 2nd-order spatial accuracy there, so the coarse-grid
@@ -190,8 +223,8 @@ they are debugging instruments, not experiments, and should run in seconds to mi
 | **3** ✅ | same CNN, 5-step rollout | 12³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5 → **6.1e-09**; (b) checkpointed == non-checkpointed → **exactly 0**; (c) peak memory at 16 steps **0.8 MB vs 13.8 MB**; (d) $\lVert\lambda\rVert$ ratio early→late **0.91** (bounded) |
 | **3.5** | **3D Taylor-Green energy budget** | 48³ periodic, $\nu=0.01$, $t\in[0,2]$ | (a) $-\mathrm{d}E/\mathrm{d}t$ vs $2\nu Z$ agree within **5%** for central; (b) numerical dissipation *quantified* for SOU; (c) $E$ monotone decreasing; (d) flux divergence < 1e-9 throughout |
 | **4** ✅ | frozen-coefficient bias | 10³ periodic, 5-step rollout | Measured: angle **0.40°**, but converged loss **25.4% worse**, and FD error 1.16e-01 → 1.99e-02 with `exact_A`. **The angle criterion proved insufficient** — see below. Recommendation: `exact_A=True` |
-| **5a** | a-priori SGS regression | filter 64³ → 16³ TGV, no solver in the loop | correlation with the true SGS term > **0.8** on held-out snapshots |
-| **5b** | a-posteriori closure training | 16³ coarse vs filtered 64³, 20-step rollout | (a) trajectory error beats **no model** by > 30%; (b) beats the 5a model used a-posteriori; (c) stable over 5× the training horizon. If (b) fails, differentiability bought nothing — report that plainly |
+| **5a** ✅ | a-priori SGS regression | filter 48³ → 16³, random solenoidal field, no solver in the loop | held-out correlation > 0.8 → **0.850** (trivial baseline −0.21) |
+| **5b** ⚠️ | a-posteriori closure training | 16³ coarse vs filtered 48³, 6-step train / 30-step check | (a) **FAIL** 2.7% vs 30% bar — *but the oracle headroom is −0.3%, so the bar was unreachable*; (b) **PASS** 0.0573 vs 0.0591; (c) **PASS** stable at 5× horizon. See the diagnosis below |
 
 **Why Stage 3.5 sits where it does.** It is not a gradient check, it is a *prerequisite* for
 Stage 5 to mean anything. MMS verifies that each operator approximates its differential
@@ -261,8 +294,8 @@ Stage 2  done  tiny CNN, all weights  <- proves the field mapping
 Stage 3  done  rollout + checkpoint   <- proves the time chain
 Stage 3.5 TGV energy budget     <- proves the baseline is not numerically polluted
 Stage 4  done   frozen-coeff bias     <- angle 0.4 deg BUT loss 25% worse; use exact_A
-Stage 5a a-priori regression    <- isolates network capacity
-Stage 5b a-posteriori training  <- the actual PICT configuration
+Stage 5a done  a-priori regression   <- corr 0.85; capacity confirmed
+Stage 5b part  a-posteriori training <- (b),(c) pass; (a) unreachable (oracle -0.3%)
 ```
 
 Each gate is cheap relative to the stage it protects; stages 1–3 should run in seconds to
