@@ -41,7 +41,7 @@ class PISOSolver:
     def __init__(self, n, warp=0.05, nu=0.01, dt=0.01, corrector_steps=2,
                  momentum_dc_iters=2, pressure_dc_iters=500, pressure_tol=1e-12,
                  boundary_flux_mode='from_velocity', periodic=None,
-                 scheme='chorin', time_scheme='be'):
+                 scheme='chorin', time_scheme='be', convection='sou'):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -73,12 +73,16 @@ class PISOSolver:
         self.per = as_periodic(periodic)
         self.scheme = scheme
         self.time_scheme = time_scheme
+        self.convection = convection
         self.u_prev = None          # for BDF2
         if any(self.per):
             self.boundary_flux_mode = 'periodic'
 
-        if any(self.per):
-            x, y, z, dxi, deta, dzeta = make_grid(n, warp=warp, periodic=self.per)
+        ns = (n, n, n) if isinstance(n, (int, np.integer)) else tuple(n)
+        self.shape = ns
+        self.nx, self.ny, self.nz = ns
+        if any(self.per) or len(set(ns)) > 1:
+            x, y, z, dxi, deta, dzeta = make_grid(ns, warp=warp, periodic=self.per)
         else:
             x, y, z, dxi, deta, dzeta, _, _ = analytical_wavy_grid_mms(n, n, n,
                                                                       Ax=warp, Ay=warp, Az=warp)
@@ -87,18 +91,18 @@ class PISOSolver:
         self.J, self.metrics = compute_numerical_metrics(x, y, z, dxi, deta, dzeta,
                                                          periodic=self.per)
 
-        self.ib, self.bb, self.bmask = boundary_masks(n, n, n, periodic=self.per)
+        self.ib, self.bb, self.bmask = boundary_masks(*ns, periodic=self.per)
 
         # fields
-        self.u = np.zeros((n, n, n))
-        self.v = np.zeros((n, n, n))
-        self.w = np.zeros((n, n, n))
-        self.p = np.zeros((n, n, n))
+        self.u = np.zeros(ns)
+        self.v = np.zeros(ns)
+        self.w = np.zeros(ns)
+        self.p = np.zeros(ns)
 
         # Dirichlet velocity boundary values (default: all walls at rest)
-        self.u_bc = np.zeros((n, n, n))
-        self.v_bc = np.zeros((n, n, n))
-        self.w_bc = np.zeros((n, n, n))
+        self.u_bc = np.zeros(ns)
+        self.v_bc = np.zeros(ns)
+        self.w_bc = np.zeros(ns)
 
     # ------------------------------------------------------------------ setup
     def set_lid_driven_cavity(self, lid_velocity=1.0):
@@ -120,9 +124,10 @@ class PISOSolver:
 
     # -------------------------------------------------------------- momentum
     def _momentum_matrix(self):
-        n, J = self.n, self.J
-        A = build_momentum_matrix_7point(n, n, n, J, self.metrics, *self.h,
-                                         self.u, self.v, self.w, self.nu, periodic=self.per)
+        J = self.J
+        A = build_momentum_matrix_7point(*self.shape, J, self.metrics, *self.h,
+                                         self.u, self.v, self.w, self.nu, periodic=self.per,
+                                         convection=self.convection)
         # Backward Euler transient term: J/dt on the diagonal (volume-integrated, so that
         # every term carries the cell volume consistently). This also strengthens diagonal
         # dominance, which is why the momentum solve needs far fewer deferred-correction
@@ -145,7 +150,7 @@ class PISOSolver:
         a collocated grid the cell-centred gradient used by the predictor and the face operator
         used by the projection are not the same operator.
         """
-        n, J, ib, bb = self.n, self.J, self.ib, self.bb
+        J, ib, bb = self.J, self.ib, self.bb
         A_ii = A[ib][:, ib].tocsr()
         A_ib = A[ib][:, bb].tocsr()
 
@@ -193,8 +198,8 @@ class PISOSolver:
         are zero for a closed domain); we project it anyway for safety and pin one cell to
         remove the constant.
         """
-        n, J = self.n, self.J
-        free = np.arange(n**3)[1:]                      # pin cell 0 to fix the null space
+        J = self.J
+        free = np.arange(J.size)[1:]                    # pin cell 0 to fix the null space
         div_F = divergence_from_fluxes(F, J, self.h)
 
         # Non-orthogonal terms are carried explicitly (PICT's nonOrthoFlags). This is a Picard
@@ -212,7 +217,7 @@ class PISOSolver:
         # means making the cross terms implicit (a 19- or 27-point matrix), which is a
         # deliberate future change, not a tuning knob. Past the limit this warns loudly rather
         # than returning a quietly wrong field.
-        M = build_conservative_diffusion_matrix(n, n, n, *self.h, J, self.metrics,
+        M = build_conservative_diffusion_matrix(*self.shape, *self.h, J, self.metrics,
                                                 coef=coef, periodic=self.per)
         M_ff = M[free][:, free].tocsr()
 

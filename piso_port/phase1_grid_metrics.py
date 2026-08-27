@@ -149,14 +149,19 @@ def make_grid(n, warp=0.0, periodic=None):
     The warp uses sin(2*pi*.) rather than sin(pi*.) so that the mapping AND all of its
     derivatives are smoothly periodic; sin(pi*.) vanishes at both ends but its derivative
     flips sign across the seam, which would make the metrics discontinuous there.
+
+    `n` may be an int (cubic) or a (nx, ny, nz) tuple. A thin periodic direction is how a
+    genuinely 2D problem is run on this 3D solver: make the spanwise axis periodic with a
+    handful of cells and the solution is span-invariant, i.e. 2D, with no end walls.
     """
     per = as_periodic(periodic)
+    ns = (n, n, n) if isinstance(n, (int, np.integer)) else tuple(n)
     axes, hs = [], []
-    for p in per:
+    for p, ni in zip(per, ns):
         if p:
-            axes.append(np.arange(n) / n); hs.append(1.0 / n)
+            axes.append(np.arange(ni) / ni); hs.append(1.0 / ni)
         else:
-            axes.append(np.linspace(0, 1, n)); hs.append(1.0 / (n - 1))
+            axes.append(np.linspace(0, 1, ni)); hs.append(1.0 / (ni - 1))
     XI, ETA, ZETA = np.meshgrid(*axes, indexing="ij")
     if any(per):
         s2 = lambda t: np.sin(2 * np.pi * t)

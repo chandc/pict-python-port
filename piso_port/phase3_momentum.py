@@ -147,11 +147,21 @@ def build_conservative_diffusion_matrix(nx, ny, nz, dxi, deta, dzeta, J, metrics
                               (np.concatenate(rows), np.concatenate(cols))),
                              shape=(N, N)).tocsr()
 
-def _sou_upwind_coefs(a, axis, n_axis, periodic=False):
+def _convection_coefs(a, axis, n_axis, periodic=False, scheme='sou'):
     """
-    2nd-Order Upwind (SOU) advection coefficients for the signed speed array `a`
-    (already scaled by 1/h). Degrades gracefully to 1st-order upwind within two cells
-    of the boundary, where the upstream stencil would reach outside the domain.
+    Convection coefficients for the signed speed array `a` (already scaled by 1/h).
+
+    scheme='sou'      2nd-Order Upwind. Upwind-biased stencil (3, -4, 1)/2h, taking the two
+                      cells on the UPSTREAM side. Degrades to 1st-order upwind within two
+                      cells of a wall, where the upstream stencil would leave the domain;
+                      on a periodic axis it never degrades, because the stencil wraps.
+                      Adds numerical dissipation, which is what keeps it stable at high
+                      cell Peclet number.
+
+    scheme='central'  2nd-Order Central, (phi_{i+1} - phi_{i-1})/2h. No dissipation and a
+                      zero diagonal contribution, so it is more accurate on smooth flows
+                      but loses diagonal dominance once the cell Peclet number
+                      Pe = |U| h / nu exceeds 2, where it produces oscillations.
 
     Returns (diagonal_coef, {offset: coef_array}).
     """
@@ -172,6 +182,14 @@ def _sou_upwind_coefs(a, axis, n_axis, periodic=False):
     c = {-1: np.zeros_like(a), -2: np.zeros_like(a),
           1: np.zeros_like(a),  2: np.zeros_like(a)}
 
+    if scheme == "central":
+        # d(phi)/dxi ~ (phi_{i+1} - phi_{i-1}) / 2h  -- symmetric, no diagonal term
+        c[1] += 0.5 * a
+        c[-1] += -0.5 * a
+        return aP, c
+    if scheme != "sou":
+        raise ValueError(f"unknown convection scheme {scheme!r}")
+
     # Flow in +xi: 2nd-order upwind reaches back to i-1, i-2
     m = pos & can_back
     aP[m] += 1.5 * a[m]; c[-1][m] += -2.0 * a[m]; c[-2][m] += 0.5 * a[m]
@@ -187,7 +205,8 @@ def _sou_upwind_coefs(a, axis, n_axis, periodic=False):
     return aP, c
 
 def build_momentum_matrix_7point(nx, ny, nz, J, metrics, dxi, deta, dzeta,
-                                 u_conv, v_conv, w_conv, nu, periodic=None):
+                                 u_conv, v_conv, w_conv, nu, periodic=None,
+                                 convection='sou'):
     """
     Assembles the implicit sparse matrix A for curvilinear advection-diffusion, in the
     VOLUME-INTEGRATED form that is consistent with compute_cross_diffusion():
@@ -221,7 +240,8 @@ def build_momentum_matrix_7point(nx, ny, nz, J, metrics, dxi, deta, dzeta,
     per = as_periodic(periodic)
 
     for axis, (speed, h) in enumerate([(U, dxi), (V, deta), (W, dzeta)]):
-        aP, coefs = _sou_upwind_coefs(speed / h, axis, n_ax[axis], per[axis])
+        aP, coefs = _convection_coefs(speed / h, axis, n_ax[axis], per[axis],
+                                      scheme=convection)
         diag += aP
 
         for off, carr in coefs.items():
