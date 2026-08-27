@@ -127,6 +127,57 @@ error is attributable to the closure rather than to boundary treatment.
 
 ---
 
+---
+
+## Test problems and acceptance criteria at a glance
+
+Every stage names one concrete problem and a numeric bar. Stages 1–3 are deliberately tiny —
+they are debugging instruments, not experiments, and should run in seconds to minutes.
+
+| Stage | Test problem | Config | Acceptance criteria |
+|---|---|---|---|
+| **0** ✅ | adjoint of one linear solve | 8³ warped, one PISO step | (a) adjoint identity on the **non-symmetric** momentum matrix, rel. err < 1e-8; (b) FD through a full step, ≥ 6 digits; (c) pressure gradient invariant to a constant shift of $\bar g$, < 1e-12 |
+| **1** ✅ | recover a scalar forcing amplitude | 8³ warped, 1 step, $S = c\,\Phi(\mathbf x)$, $c_{\text{true}}=0.7$ | (a) $\partial L/\partial c$ vs central FD, rel. err < 1e-6; (b) **sign** correct (negative when $c < c_{\text{true}}$); (c) descent from $c=0$ recovers $0.7$ to < 1e-4 |
+| **2** | tiny CNN predicts a source field | 16³ **periodic**, 1 step, 2 conv layers ≈ 200 weights, target from a known $S^\ast$ | (a) FD on **every** weight, max rel. err < 1e-5; (b) recover $S^\ast$: final $\lVert S_\theta - S^\ast\rVert / \lVert S^\ast\rVert < 0.05$; (c) shift-invariance — translating the input by one cell translates the output by one cell, < 1e-10 |
+| **3** | same CNN, 5-step rollout | 16³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5; (b) checkpointed gradient == non-checkpointed, < 1e-12; (c) peak memory scales $O(N/k + k)$, measured; (d) $\lVert\lambda\rVert$ bounded over the window (no adjoint blow-up) |
+| **3.5** | **3D Taylor-Green energy budget** | 48³ periodic, $\nu=0.01$, $t\in[0,2]$ | (a) $-\mathrm{d}E/\mathrm{d}t$ vs $2\nu Z$ agree within **5%** for central; (b) numerical dissipation *quantified* for SOU; (c) $E$ monotone decreasing; (d) flux divergence < 1e-9 throughout |
+| **4** | frozen-coefficient bias | 16³ periodic, 10-step rollout | Report, do not gate: angle between exact and frozen gradients (deg), and $\Delta$ converged loss after 200 training steps. **Publish the number**; only use the shortcut if the angle < 5° |
+| **5a** | a-priori SGS regression | filter 64³ → 16³ TGV, no solver in the loop | correlation with the true SGS term > **0.8** on held-out snapshots |
+| **5b** | a-posteriori closure training | 16³ coarse vs filtered 64³, 20-step rollout | (a) trajectory error beats **no model** by > 30%; (b) beats the 5a model used a-posteriori; (c) stable over 5× the training horizon. If (b) fails, differentiability bought nothing — report that plainly |
+
+**Why Stage 3.5 sits where it does.** It is not a gradient check, it is a *prerequisite* for
+Stage 5 to mean anything. MMS verifies that each operator approximates its differential
+counterpart; it says nothing about whether the assembled nonlinear scheme conserves the
+quadratic invariants that govern a cascade. The periodic identity
+
+$$\frac{\mathrm{d}E}{\mathrm{d}t} = -2\nu Z, \qquad E=\tfrac12\langle|\mathbf u|^2\rangle,\quad Z=\tfrac12\langle|\boldsymbol\omega|^2\rangle$$
+
+holds exactly in the continuum, so the gap between measured $-\mathrm{d}E/\mathrm{d}t$ and
+$2\nu Z$ **is** the scheme's numerical dissipation. That matters directly for Stage 5: SOU is
+dissipative by construction, so training a closure on an SOU baseline asks the network to
+correct numerics as well as physics, and the two become inseparable. Measure the numerical
+dissipation first, then decide which convection scheme the closure work should use.
+
+**Measured** (`run_tgv3d.py`, 48³, ν = 0.01, rotational + BDF2, t ∈ [0,2]):
+
+| scheme | mean numerical / physical dissipation | max | energy at t=2 |
+|---|---|---|---|
+| 2nd-order upwind | **1.10 %** | 1.48 % | 6.66e-04 |
+| central | **0.56 %** | 0.66 % | 6.77e-04 |
+
+Energy is monotone decreasing for both, and flux divergence stays at 7.8e-15 (SOU) /
+4.3e-14 (central). SOU carries **roughly twice** central's numerical dissipation and removes
+1.56 % more total energy by t = 2 — the dissipative error is real, quantified, and exactly the
+sort of thing a closure would otherwise be asked to absorb.
+
+**Resolution honesty — this is not a turbulence benchmark.** The canonical TGV case is
+$Re=1600$, needing ~$256^3$ for DNS, far beyond a NumPy solver. At ν = 0.01 the flow is fully
+resolved and laminar: **enstrophy peaks at t = 0 and decays monotonically**, so there is no
+vortex stretching and no cascade (the real TGV peaks near t ≈ 9). What this validates is the
+*energy-budget machinery* and the relative dissipation of the two convection schemes — not
+turbulence. Any write-up must say so.
+
+
 ## Verification tooling to build alongside
 
 | Tool | Purpose |
@@ -160,6 +211,7 @@ Stage 0  done
 Stage 1  scalar recovery        <- proves sign and scale
 Stage 2  tiny CNN, all weights  <- proves the field mapping
 Stage 3  rollout + checkpoint   <- proves the time chain
+Stage 3.5 TGV energy budget     <- proves the baseline is not numerically polluted
 Stage 4  frozen-coeff bias      <- quantifies a known approximation
 Stage 5a a-priori regression    <- isolates network capacity
 Stage 5b a-posteriori training  <- the actual PICT configuration
