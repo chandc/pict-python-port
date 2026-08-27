@@ -1,0 +1,18 @@
+This repository contains an independent, educational re-implementation written for
+learning purposes. It is NOT the PICT solver and is not affiliated with or endorsed by
+its authors.
+
+The reference implementation it studies is:
+
+    PICT - A Differentiable, GPU-Accelerated Multi-Block PISO Solver for
+    Simulation-Coupled Learning Tasks in Fluid Dynamics
+    https://github.com/tum-pbs/PICT
+    Journal of Computational Physics, https://doi.org/10.1016/j.jcp.2025.114433
+    arXiv: https://arxiv.org/abs/2505.16992
+    Copyright the PICT authors, licensed under the Apache License 2.0.
+
+No PICT source code is redistributed here. Where this port mirrors a PICT design
+decision, the corresponding C++/CUDA function and line number is cited in comments and
+in docs, so the reader can look it up in the upstream repository.
+
+This work is likewise licensed under the Apache License 2.0 (see LICENSE).
