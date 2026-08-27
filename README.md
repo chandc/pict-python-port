@@ -38,7 +38,7 @@ validate each one before moving on.
 | Spatial order, full solver | **2.02, 2.00, 2.00** (warped periodic) |
 | Temporal order, full solver | **1.91, 1.94, 1.97** (rotational projection + BDF2) |
 | Flux divergence after projection | **~1e-12 – 1e-10** |
-| 2D cavity vs Ghia et al. Re=100 | RMS deviation **0.0033** |
+| 2D cavity vs Ghia et al. Re=100 | RMS deviation **0.0033** (u), **0.0072** (v) |
 | Numerical dissipation (3D TGV) | **1.10%** SOU vs **0.56%** central, converging at 2nd order |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
 | Automated checks | **66** across eleven scripts |
