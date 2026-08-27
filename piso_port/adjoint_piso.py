@@ -24,6 +24,11 @@ from phase3_momentum import (build_momentum_matrix_7point, build_conservative_di
 
 TOL = 1e-13
 
+# Adjoint-norm log. The adjoint of an advection-dominated flow transports sensitivity
+# UPSTREAM and can amplify over a long rollout, so ||lambda|| per solve is the diagnostic
+# that catches it -- silently clipping gradients would hide exactly this.
+ADJOINT_NORMS = []
+
 
 def _solve(A, b, symmetric, transpose=False):
     """
@@ -87,6 +92,8 @@ class LinearSolve(torch.autograd.Function):
         lam = _solve(A, gn, symmetric, transpose=not symmetric)
         if singular:
             lam -= lam.mean()
+
+        ADJOINT_NORMS.append(float(np.linalg.norm(lam)))
 
         grad_A = None
         if ctx.needs_input_grad[0]:

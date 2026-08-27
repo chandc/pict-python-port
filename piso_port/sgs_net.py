@@ -23,6 +23,13 @@ class TinySGSNet(nn.Module):
         return self.c2(torch.tanh(self.c1(x)))
 
     def field(self, u, v, w, shape):
-        """Convenience: numpy fields in, a (3, N) source tensor out."""
-        x = torch.stack([torch.as_tensor(f.reshape(shape)) for f in (u, v, w)]).unsqueeze(0)
-        return self(x).squeeze(0).reshape(3, -1)
+        """
+        Fields in, a (3, N) source tensor out. Accepts numpy arrays or torch tensors --
+        passing TORCH tensors keeps the network input inside the autograd graph, which is
+        what makes a multi-step rollout gradient faithful rather than per-step.
+        """
+        cols = []
+        for f in (u, v, w):
+            t = f if torch.is_tensor(f) else torch.as_tensor(f)
+            cols.append(t.reshape(shape))
+        return self(torch.stack(cols).unsqueeze(0)).squeeze(0).reshape(3, -1)

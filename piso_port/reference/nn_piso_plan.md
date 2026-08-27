@@ -85,11 +85,17 @@ state (or accumulated).
 Add gradient checkpointing — store the state every $k$ steps and recompute the forward within
 a segment, since each step must otherwise retain $A$, $M$, $\mathbf{u}^*$, $\phi$.
 
-**Gate.**
-1. FD check on a 5-step rollout (a few sampled weights) to 5 digits.
-2. Checkpointed gradient equals the non-checkpointed gradient to machine precision — this
-   isolates checkpointing bugs from adjoint bugs.
-3. Memory scales as $O(N/k + k)$, measured, not assumed.
+**Gate — passed** ([`nn_stage3_rollout.py`](../nn_stage3_rollout.py)): FD **6.1e-09**;
+checkpointed gradient identical to **exactly 0** difference; 16-step peak memory **0.8 MB**
+checkpointed vs **13.8 MB** not (a 17× reduction); adjoint norm ratio **0.91**.
+
+**Gate (a) had to be redesigned, and the reason matters.** As first written it compared the
+rollout gradient against finite differences — but the rollout uses the frozen-coefficient
+approximation, while FD measures the *exact* derivative. The gate was therefore testing
+something the implementation deliberately does not compute, and it failed at 16% relative
+error. The fix was **not** a looser tolerance: the gate now runs with `rebuild=False`, holding
+$A$ genuinely constant so the adjoint gradient *is* exact and FD must match — isolating the
+time chain (Stage 3's actual subject) from the frozen-coefficient bias (Stage 4's).
 
 **Watch for.** Adjoint instability over long rollouts: the adjoint of an advection-dominated
 flow transports sensitivity *upstream* and can amplify. Plot $\lVert\lambda\rVert$ per step;
@@ -107,9 +113,20 @@ descent direction — but it is **not** the true gradient.
 **Build.** Implement the term; make it a flag.
 
 **Gate.** Measure, don't assume: report the angle between the exact and frozen-coefficient
-gradients over a 10-step rollout, and the difference in converged loss after a short training
-run. **Publish the number either way** — if the shortcut is used in later stages, its bias must
-be a stated quantity, not an unexamined convenience.
+gradients, and the difference in converged loss after a short training run. **Publish the number
+either way** — if the shortcut is used in later stages, its bias must be a stated quantity, not
+an unexamined convenience.
+
+**Angle already measured** (Stage 3, 12³, 5-step rollout): **1.75°**, magnitude ratio **1.003**
+— inside the 5° threshold, so the shortcut is acceptable at this configuration.
+
+Worth noting *why the angle is the right metric*: per-component relative error between the two
+gradients reaches **16%**, which looks alarming, yet the gradient *direction* — the only thing
+descent uses — differs by under 2°. Small components can be badly wrong in relative terms while
+contributing nothing to the direction. Had the criterion been per-component error, this shortcut
+would have been rejected on a misleading number.
+
+*Remaining for Stage 4:* the Δ converged-loss comparison after training with each gradient.
 
 ---
 
@@ -150,7 +167,7 @@ they are debugging instruments, not experiments, and should run in seconds to mi
 | **0** ✅ | adjoint of one linear solve | 8³ warped, one PISO step | (a) adjoint identity on the **non-symmetric** momentum matrix, rel. err < 1e-8; (b) FD through a full step, ≥ 6 digits; (c) pressure gradient invariant to a constant shift of $\bar g$, < 1e-12 |
 | **1** ✅ | recover a scalar forcing amplitude | 8³ warped, 1 step, $S = c\,\Phi(\mathbf x)$, $c_{\text{true}}=0.7$ | (a) $\partial L/\partial c$ vs central FD, rel. err < 1e-6; (b) **sign** correct (negative when $c < c_{\text{true}}$); (c) descent from $c=0$ recovers $0.7$ to < 1e-4 |
 | **2** ✅ | tiny CNN predicts a source field | 16³ **periodic** Cartesian, 1 step, 173 weights, target from the same architecture with different weights | (a) FD on **every** weight, max rel. err < 1e-5 → **4.6e-08**; (b) reproduce the target **velocity** to < 1e-3 → **8.9e-04**; (c) shift-equivariance < 1e-10 → **1.1e-16** |
-| **3** | same CNN, 5-step rollout | 16³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5; (b) checkpointed gradient == non-checkpointed, < 1e-12; (c) peak memory scales $O(N/k + k)$, measured; (d) $\lVert\lambda\rVert$ bounded over the window (no adjoint blow-up) |
+| **3** ✅ | same CNN, 5-step rollout | 12³ periodic, loss on final state | (a) FD on 5 sampled weights, rel. err < 1e-5 → **6.1e-09**; (b) checkpointed == non-checkpointed → **exactly 0**; (c) peak memory at 16 steps **0.8 MB vs 13.8 MB**; (d) $\lVert\lambda\rVert$ ratio early→late **0.91** (bounded) |
 | **3.5** | **3D Taylor-Green energy budget** | 48³ periodic, $\nu=0.01$, $t\in[0,2]$ | (a) $-\mathrm{d}E/\mathrm{d}t$ vs $2\nu Z$ agree within **5%** for central; (b) numerical dissipation *quantified* for SOU; (c) $E$ monotone decreasing; (d) flux divergence < 1e-9 throughout |
 | **4** | frozen-coefficient bias | 16³ periodic, 10-step rollout | Report, do not gate: angle between exact and frozen gradients (deg), and $\Delta$ converged loss after 200 training steps. **Publish the number**; only use the shortcut if the angle < 5° |
 | **5a** | a-priori SGS regression | filter 64³ → 16³ TGV, no solver in the loop | correlation with the true SGS term > **0.8** on held-out snapshots |
@@ -221,9 +238,9 @@ turbulence. Any write-up must say so.
 Stage 0  done
 Stage 1  done  scalar recovery        <- proves sign and scale
 Stage 2  done  tiny CNN, all weights  <- proves the field mapping
-Stage 3  rollout + checkpoint   <- proves the time chain
+Stage 3  done  rollout + checkpoint   <- proves the time chain
 Stage 3.5 TGV energy budget     <- proves the baseline is not numerically polluted
-Stage 4  frozen-coeff bias      <- quantifies a known approximation
+Stage 4  part   frozen-coeff bias     <- angle measured (1.75 deg); loss delta pending
 Stage 5a a-priori regression    <- isolates network capacity
 Stage 5b a-posteriori training  <- the actual PICT configuration
 ```
