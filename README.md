@@ -81,14 +81,32 @@ the warped physical→computational map.
 
 ### Against the Ghia benchmark
 
-<p align="center"><img src="images/cavity_vs_ghia.png" width="88%"></p>
+<p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
-Ghia et al. (1982) is a **2D** benchmark; ours is a **3D** cavity with no-slip end walls, so
-these are not the same problem and exact agreement would be suspicious. Refinement moves us
-monotonically toward it (RMS deviation 0.035 → 0.030 → 0.028 for 24³/32³/40³), but
-extrapolates to a non-zero residual — and that residual sits in the **core** (RMS 0.039), not
-at the walls (0.014), which is where our scheme's known 1st-order treatments live. A proper
-validation needs a *3D* cubic-cavity benchmark; that is open work.
+Ghia et al. (1982) is a **2D** benchmark, so the honest comparison runs a 2D cavity — done here
+by making the spanwise direction **periodic** with a handful of cells. That removes the end
+walls entirely, the solution is span-invariant (measured span-variation ~2e-09), and the
+configuration is then exactly Ghia's. In-plane resolution matches theirs at 129x129.
+
+| case | u_min | Ghia | v_max | Ghia | v_min | Ghia | RMS dev (u, v) |
+|---|---|---|---|---|---|---|---|
+| Re 100, SOU | -0.2138 | -0.2109 | 0.1834 | 0.1753 | -0.2531 | -0.2453 | 0.0033, 0.0152 |
+| Re 100, central | -0.2134 | -0.2109 | 0.1806 | 0.1753 | -0.2489 | -0.2453 | 0.0042, 0.0132 |
+| Re 400, SOU | -0.3117 | -0.3273 | 0.2891 | 0.3020 | -0.4189 | -0.4499 | 0.0137, 0.0310 |
+
+Re 100 lands essentially on the benchmark. Re 400 is close but visibly under-predicts the
+extrema — steeper gradients at higher Reynolds need more than 129 cells for a 2nd-order scheme,
+and Ghia used a coupled multigrid method on the same mesh.
+
+**This also settled an earlier open question.** Sampling the mid-plane of a *walled 3D* cavity
+gave an RMS deviation of 0.0277 that refinement would not remove, and the residual sat in the
+flow core rather than at the walls — which pointed at 3D-vs-2D physics rather than our
+discretisation, but could not be proven without a true 2D run. Running the genuine 2D case
+drops it to **0.0033, an 8x improvement**, confirming the diagnosis: the earlier gap was the
+end walls, not the numerics.
+
+Flux divergence held at **1.5e-12** throughout, and the two convection schemes agree closely at
+Re 100 (cell Peclet ~0.8, well inside central's stable range).
 
 ## Things this exercise surfaced
 
