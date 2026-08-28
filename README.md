@@ -40,8 +40,11 @@ validate each one before moving on.
 | Flux divergence after projection | **~1e-12 – 1e-10** |
 | 2D cavity vs Ghia et al. Re=100 | RMS deviation **0.0033** (u), **0.0072** (v) |
 | Numerical dissipation (3D TGV) | **1.10%** SOU vs **0.56%** central, converging at 2nd order |
+| Wall-bounded Stokes eigenvalue | **-9.313739** reproduced to **4.7e-4** (no closed form exists) |
+| Inviscid energy conservation, central | **1e-16** — exact to round-off |
+| Inviscid energy loss, SOU | **10.35%** of E per turnover on a broadband field |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
-| Automated checks | **66** across eleven scripts |
+| Automated checks | **117** (116 passing; 1 known-failing gate on the work-in-progress Dong outflow) |
 
 <p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
@@ -103,6 +106,85 @@ turns any gap into a direct measure of the scheme's numerical dissipation:
 
 <p align="center"><img src="images/tgv3d_E_Z.png" width="88%"></p>
 <p align="center"><img src="images/tgv3d_resolution.png" width="88%"></p>
+
+---
+
+## Stokes flow: verifying the *spectrum*, not just the solution
+
+MMS verifies that each operator approximates its differential counterpart. Ghia, Poiseuille and
+the duct verify that the solver reproduces known *solutions*. Neither checks the property that
+decides whether a disturbance in a real calculation grows or dies: **the spectrum of the linear
+operator**. A scheme can track a decaying solution to plotting accuracy while getting its
+eigenvalue wrong by percent — invisible in a solution comparison, decisive for stability work.
+
+The unsteady Stokes equations have exact eigenvalues, so this can be measured directly.
+
+**Periodic box** — closed form $\sigma = -\nu|k|^2$. Five modes including a pure shear mode
+(1,0) and obliques, worst error **1.2e-2**. Spatial order 1.89/1.95/1.97; temporal order
+**0.99** (Chorin/BE) and **2.01** (rotational/BDF2), against design orders 1 and 2. A superposed
+three-mode disturbance has every mode decay at *its own* rate to ~1%, though the fastest decays
+6.5x quicker than the slowest — so the solver reproduces the whole spectrum, not one eigenvalue.
+
+**Wall-bounded channel** — $\sigma = -9.313739$, which has **no closed form**: it is the root of
+a transcendental condition, referenced here against a Chebyshev clamped-$D_4$ eigensolve.
+Reproduced to **4.7e-4** at 65x48, spatial order 2.07/2.11/2.35.
+
+<p align="center"><img src="images/stokes_decay.png" width="92%"></p>
+
+Three findings, none of which the periodic case alone could produce:
+
+- **The scheme is *not* second order in time for wall-bounded flow** — **1.68** with no-slip
+  walls versus **2.01** periodic. That is the $O(\Delta t^{3/2})$ near-wall splitting error of
+  rotational incremental projection, and no periodic test can expose it.
+- **The spatial and temporal errors have opposite signs** (spatial over-damps, temporal
+  under-damps). In the 5x5 error matrix the single best entry is the **coarsest** time step at
+  the finest grid, and refining $\Delta t$ from there nearly doubles the error. Single-parameter
+  refinement studies are actively misleading here — refine both together.
+- **There is no numerical-dissipation floor.** The $\Delta t \to 0$ column converges to zero at
+  order 1.91–1.97, and periodic modes come out *under*-damped while walled ones are
+  *over*-damped — a dissipative mechanism cannot flip sign with the boundary condition.
+
+This also found a real solver defect: `compute_numerical_metrics` never passed `period` through
+to `wrap_pad_coords`, so any periodic domain of length $\neq 1$ — such as the $2\pi$ box this
+case needs — would have had a corrupted seam and a collapsed Jacobian.
+
+Full detail: [`stokes_verification.md`](piso_port/reference/stokes_verification.md).
+
+---
+
+## Does the convective scheme conserve energy?
+
+The property that governs whether a scheme can carry a turbulent cascade — and the one thing
+none of the tests above check, because every one of them is linear or steady.
+
+For $\nu = 0$ with periodic boundaries, convection must redistribute kinetic energy without
+creating or destroying it. Discretely that holds only if the convective operator is
+**skew-symmetric**. The momentum assembler with $\nu = 0$ *is* the volume-integrated convective
+operator, so the energy production rate
+$P = \sum_c \mathbf{u}_c\cdot(C\,\mathbf{u}_c)\,\mathrm{d}V$ can be measured directly.
+
+| $n=48$ | Taylor-Green | random solenoidal |
+|---|---|---|
+| `central`, $\varepsilon = P/E$ | **-5.8e-18** | **+1.2e-16** |
+| `sou`, $\varepsilon = P/E$ | 5.36e-3 (0.54%/turnover) | 9.60e-2 (**10.35%**/turnover) |
+| `sou` convergence | $h^{2.99}$ | $h^{2.86}$ |
+
+**`central` conserves energy exactly** — at round-off, on both fields and every grid. The
+operator is discretely skew-symmetric, which is the prerequisite for a cascade.
+
+**`sou` removes 10.35% of the kinetic energy per eddy turnover** on the broadband field, against
+0.54% on smooth Taylor-Green. That gap *is* the finding: upwind dissipation scales with
+small-scale content, and turbulence is nothing but small-scale content.
+
+Run inviscid TGV past resolution and the two split in opposite directions — `central`
+accumulates +3%, `sou` removes -3.5%. Neither is a defect: an energy-conserving scheme with no
+SGS model piles energy at the grid scale, and that pile is exactly what a closure exists to
+remove. `sou`'s dissipation happens to cancel it, which is precisely what makes it a **polluted
+baseline** — it looks stable while quietly doing the closure's job.
+
+> **Consequence:** `convection='central'` is mandatory for any LES or SGS-learning use of this
+> solver. With `sou` the numerical dissipation sits an order of magnitude above a typical SGS
+> contribution and would swamp whatever a network learns.
 
 ---
 
@@ -241,6 +323,7 @@ uv run run_tgv3d.py      && uv run plot_tgv3d.py
 | [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How spatial and temporal orders were established, why they must be measured separately, and the energy-budget check convergence rates cannot give you |
 | [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | The discrete adjoint: why velocity needs a genuine transpose solve, pressure does not, and how to handle its singular null space |
 | [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | The six-stage CNN coupling plan, with test problems, acceptance criteria, and the two criteria the measurements overturned |
+| [`stokes_verification.md`](piso_port/reference/stokes_verification.md) | Both Stokes eigenvalue problems in full — setup, methodology, the 5x5 error matrix, the opposite-sign error finding, and the defects the tests exposed (including four in the tests themselves) |
 | [`multiblock_offsets.md`](piso_port/reference/multiblock_offsets.md) | How PICT joins blocks: the global index space, CSR offsets, and the axis-permutation connection map — with diagrams. PICT uses **no ghost cells**; coupling is implicit in one global matrix |
 | [`implementation_plan.md`](piso_port/reference/implementation_plan.md) · [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The original plan, the Phase 1–3 narrative, and the collocated-vs-staggered investigation |
 
