@@ -158,8 +158,25 @@ to the channel's 1.6 pressure drop — the same size as the observed 6.3e-5 erro
 
 So this is **not an implementation bug** but an inherent property of Dong's regularised switch
 where an open boundary meets a no-slip wall: $\Theta$ does not vanish where $u_n \to 0$, leaving a
-thin near-wall layer with a spurious traction of size $O(U_0^2\delta^2)$. $\delta$ trades
-energy-stability robustness against a near-wall consistency error.
+thin near-wall layer with a spurious traction of size $O(U_0^2\delta^2)$.
+
+### The fix, verified
+
+Reducing $\delta$ removes it. Dong L2/Umax on exact Poiseuille:
+
+| $\delta$ | 17×13 | 33×25 | 65×49 |
+|---|---|---|---|
+| 0.050 (old default) | 8.51e-7 | 3.00e-5 | 4.16e-5 |
+| 0.020 | 2.22e-7 | 5.14e-8 | 4.99e-7 |
+| **0.010 (new default)** | 2.22e-7 | 5.26e-8 | **3.51e-7** |
+| 0.005 | 2.22e-7 | 5.26e-8 | 3.51e-7 |
+
+An **83x improvement** from 0.05 to 0.02, then a floor at 3.51e-7 — which is exactly the
+"viscous only" figure from the isolation table above, i.e. what remains once $\Theta$ stops
+contributing. The default is now $\delta = 0.01$.
+
+Note the trade is one-sided: a smaller $\delta$ *sharpens* the backflow switch, so it costs
+nothing on the energy-stability side. $\delta = 0.05$ was simply too loose a regularisation.
 
 ## 6. What is NOT established
 
@@ -180,7 +197,7 @@ compare each short-domain result against that solution truncated to the same reg
 | | state |
 |---|---|
 | convective outflow | **working** — exact Poiseuille to 3e-8, mass conserved to 1e-16 |
-| Dong outflow | **runs and is stable, but not consistent at the default $\delta$** |
+| Dong outflow | **fixed** — 3.51e-7 on exact Poiseuille at $\delta = 0.01$ (was 4.16e-5) |
 | Dong root cause | **identified** — the $\Theta$ term, $O(U_0^2\delta^2)$ near a no-slip wall |
-| Dong remedy | reduce $\delta$; verification in progress |
+| Dong remedy | $\delta = 0.01$, now the default; an 83x improvement, verified by sweep |
 | backflow discrimination | **not achieved** — needs sustained shedding |

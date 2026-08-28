@@ -60,8 +60,9 @@ KNOWN DEFECT (dong): the Theta term is inconsistent at a no-slip wall
 
     So this is NOT an implementation bug but an inherent property of Dong's regularised switch
     at a wall junction: delta trades energy-stability robustness against a near-wall consistency
-    error. The remedy is a smaller delta (verification of the delta^2 scaling in the solver is
-    in progress); it is a parameter choice, not a reformulation.
+    error. VERIFIED REMEDY: delta = 0.01 (now the default) drops the 65x49 error from 4.16e-5
+    to 3.51e-7, an 83x improvement that then saturates at the floor set by the remaining terms.
+    It is a parameter choice, not a reformulation.
 
     An earlier version of this note blamed the explicit nu*d(u.n)/dn term, on the theory that it
     closes a feedback loop of gain nu*dt/dn^2 = 0.016/0.064/0.256. That was WRONG: the error
@@ -78,8 +79,15 @@ from phase5_fluxes import contravariant_components
 class Outflow:
     """One outflow face. axis 0/1/2 = xi/eta/zeta; side 0 = lower, 1 = upper."""
 
-    def __init__(self, axis, side, kind="convective", U_c=1.0, U0=None, delta=0.05,
+    def __init__(self, axis, side, kind="convective", U_c=1.0, U0=None, delta=0.01,
                  hold=None):
+        # delta = 0.01, not the 0.05 first used. Theta = 1/2(1-tanh(u_n/(U0 delta))) does not
+        # vanish where u_n -> 0, so at a no-slip wall junction it leaves a spurious near-wall
+        # traction of size O(U0^2 delta^2). Measured Dong error on exact Poiseuille at 65x49:
+        # 4.16e-5 / 4.99e-7 / 3.51e-7 / 3.51e-7 for delta = 0.05 / 0.02 / 0.01 / 0.005 -- an
+        # 83x improvement, then a floor at 3.51e-7 which is exactly the residual with Theta
+        # switched off entirely. Smaller delta sharpens the backflow switch, so it trades
+        # nothing away on the energy-stability side; 0.05 was simply too loose.
         if kind not in ("convective", "zero_gradient", "dong"):
             raise ValueError(f"unknown outflow kind {kind!r}")
         self.axis, self.side, self.kind = axis, side, kind

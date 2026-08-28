@@ -283,3 +283,53 @@ Worth flagging before starting: on warped grids the pressure deferred correction
 existing performance cliff. Making the cross terms implicit (a 19-point stencil, measured 27×
 faster and 24× lighter for the adjoint) would be worth sequencing *before* multi-block rather
 than after.
+
+---
+
+## Implementation status (foundation landed)
+
+`multiblock.py` provides the index and connection layer; `test_multiblock.py` gates it (10/10).
+Nothing in it is imported by the single-block path — a `Domain` of one block with no connections
+*is* the existing solver, unchanged.
+
+### The constraint our grid adds that PICT's does not
+
+PICT is cell-centred, so cells are distinct however blocks meet and a connection is simply a
+face. **Our nodes sit ON boundaries**, so if both blocks stored their interface nodes those nodes
+would be *duplicated* and the resolution would halve across the seam — the same failure
+`make_grid`'s docstring warns about for periodic axes. A connected face must therefore follow the
+**periodic** node rule: store up to but not including the interface, and let the neighbour supply
+the next node.
+
+`Domain.validate()` enforces this by checking the coordinates directly — the two blocks'
+interface nodes must not coincide. An earlier version checked the *spacing* against $1/n$ and was
+wrong: a connected axis's spacing is set by the **global** cell count across all blocks in that
+direction, not by one block's count, so a correct 4-way split was rejected.
+
+### Orientation is a permutation plus explicit flips, not signed axes
+
+PICT encodes the connection map with signed axis indices, the sign meaning "inverted". That
+cannot express *flip axis 0* in Python, because `-0 == 0`, so a signed encoding silently loses
+one of the eight orientations. `Connection` therefore carries `axes=(0,1)` and
+`flips=(False,False)` separately. All eight combinations are round-trip tested.
+
+### The test that earns its keep: split-equals-whole
+
+Take a domain that is genuinely one block, cut it into 2 and 4 pieces, and require the
+multi-block machinery to reproduce the single-block answer **exactly**. The unsplit run *is* the
+reference, so no external data is needed, and every orientation, index-offset and seam-spacing
+bug fails it loudly. Currently verified: the neighbour set (192 pairs, identical) and the
+coordinates (0.00e+00 difference).
+
+### Still to build
+
+1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
+   connection. `outflow.py`'s `Outflow(axis, side, ...)` is a first step but covers outflow only.
+2. **Metrics across a seam** — ghost padding must come from the neighbour's coordinates with the
+   orientation transform applied, or the Jacobian collapses at the interface. The GCL check
+   catches this.
+3. **Global solvers** — one pinned cell for the whole domain, not one per block; cross-term
+   fluxes must cross interfaces; a *block-diagonal* preconditioner would silently decouple the
+   blocks and converge to the wrong answer.
+4. **Adjoint** — `LinearSolve` transposes one global matrix so it should carry over, but the
+   connection map contributes to `dL/dA` and that path is unexercised.
