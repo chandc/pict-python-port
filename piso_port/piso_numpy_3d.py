@@ -41,7 +41,8 @@ class PISOSolver:
     def __init__(self, n, warp=0.05, nu=0.01, dt=0.01, corrector_steps=2,
                  momentum_dc_iters=2, pressure_dc_iters=500, pressure_tol=1e-12,
                  boundary_flux_mode='from_velocity', periodic=None,
-                 scheme='chorin', time_scheme='be', convection='sou'):
+                 scheme='chorin', time_scheme='be', convection='sou',
+                 pressure_coef='auto', picard_iters=1):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -74,6 +75,25 @@ class PISOSolver:
         self.scheme = scheme
         self.time_scheme = time_scheme
         self.convection = convection
+        # How Gamma (the pressure-correction coefficient) approximates the response of A^{-1}
+        # to a pressure gradient:
+        #   'diag'   -- Gamma = J/A_diag. The textbook PISO/SIMPLE choice, and what PICT uses
+        #               (raP = 1/Adiag).
+        #   'rowsum' -- Gamma = J/rowsum(A), the SIMPLEC choice. For a SMOOTH gradient this is
+        #               the correct measure: the diffusion operator has ZERO row sum, so its
+        #               diagonal is entirely cancelled by its neighbours and 'diag' understates
+        #               the response by a factor 1 + 2 nu dt sum(1/h_i^2). That factor reaches
+        #               3.4 at nu*dt/h^2 ~ 1.2 and 10 at ~4.8 -- and it is exactly where the
+        #               incremental/rotational feedback loop goes unstable.
+        #   'auto'   -- 'diag' for chorin (matching PICT exactly, and harmless there since
+        #               chorin never feeds p back), 'rowsum' for the accumulating schemes.
+        if pressure_coef == 'auto':
+            pressure_coef = 'diag' if scheme == 'chorin' else 'rowsum'
+        self.pressure_coef = pressure_coef
+        # Outer Picard iterations per step. A is assembled from the OLD velocity, which is an
+        # O(dt) lag; repeating the step with A rebuilt from the latest u* removes it. Costs
+        # nothing when advection vanishes (a Cartesian channel), matters when it does not.
+        self.picard_iters = picard_iters
         self.u_prev = None          # for BDF2
         if all(self.per):
             # Only a FULLY periodic domain has no prescribed boundary faces at all. With mixed
@@ -131,10 +151,11 @@ class PISOSolver:
         self.w[m] = self.w_bc[m]
 
     # -------------------------------------------------------------- momentum
-    def _momentum_matrix(self):
+    def _momentum_matrix(self, convect=None):
         J = self.J
         A = build_momentum_matrix_7point(*self.shape, J, self.metrics, *self.h,
-                                         self.u, self.v, self.w, self.nu, periodic=self.per,
+                                         *(convect if convect is not None else (self.u, self.v, self.w)),
+                                         self.nu, periodic=self.per,
                                          convection=self.convection)
         # Backward Euler transient term: J/dt on the diagonal (volume-integrated, so that
         # every term carries the cell volume consistently). This also strengthens diagonal
@@ -255,12 +276,55 @@ class PISOSolver:
 
     # ------------------------------------------------------------------ step
     def step(self):
+        """
+        Advance one step, optionally iterating the Picard linearisation.
+
+        A is assembled from the convecting velocity, which by default is u^n -- an O(dt) lag.
+        Repeating the step with A rebuilt from the latest u*, restoring the starting state each
+        time so time advances only once, removes that lag.
+        """
+        if self.picard_iters <= 1:
+            return self._step_once()
+        u0, v0, w0, p0 = self.u.copy(), self.v.copy(), self.w.copy(), self.p.copy()
+        prev0 = self.u_prev
+        convect, out = None, None
+        for _k in range(self.picard_iters):
+            if _k > 0:
+                self.u, self.v, self.w = u0.copy(), v0.copy(), w0.copy()
+                self.p, self.u_prev = p0.copy(), prev0
+            out = self._step_once(convect)
+            convect = (self.u.copy(), self.v.copy(), self.w.copy())
+        return out
+
+    def _step_once(self, convect=None):
         J = self.J
 
-        A = self._momentum_matrix()
+        A = self._momentum_matrix(convect)
         us, vs, ws = self._solve_momentum(A)           # hbyA
 
-        coef = J / A.diagonal().reshape(J.shape)       # PICT's 1/Adiag, volume-weighted
+        rowsum = np.asarray(A.sum(axis=1)).ravel().reshape(J.shape)
+        diag = A.diagonal().reshape(J.shape)
+        if self.pressure_coef == 'rowsum':
+            denom = rowsum
+        else:
+            denom = diag
+            # Guard the combination that is genuinely unsound: an accumulating scheme with the
+            # diagonal coefficient. 'diag' understates the response of A^{-1} to a smooth
+            # pressure gradient by rowsum/diag = 1 + 2 nu dt sum(1/h_i^2), because the diffusion
+            # operator has ZERO row sum. Chorin is unaffected -- it replaces p rather than
+            # accumulating it -- but the incremental schemes feed that deficit back every step
+            # and diverge once the ratio passes ~3. Fail loudly, not 100 steps into a run.
+            if self.scheme != 'chorin':
+                # NOTE the direction: the deficit is diag/rowsum, i.e. Gamma_rowsum/Gamma_diag.
+                # rowsum/diag is always < 1 and would never trip this.
+                ratio = float(np.mean(diag / rowsum))
+                if ratio > 3.0:
+                    raise RuntimeError(
+                        f"pressure_coef='diag' with scheme='{self.scheme}' is unstable here: "
+                        f"diag/rowsum = {ratio:.2f} (> 3). The correction under-corrects by that "
+                        f"factor and the incremental loop amplifies it. Use "
+                        f"pressure_coef='rowsum', or reduce nu*dt/h^2.")
+        coef = J / denom
 
         # Pressure is solved afresh every step (never carried over), matching PICT, where
         # CopyPressureResultToBlocks replaces the pressure field each corrector.

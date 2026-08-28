@@ -202,6 +202,7 @@ uv run test_phase5_order.py                #  5 checks: temporal order, periodic
 uv run test_spatial_order.py               #  full-solver spatial order
 uv run test_poiseuille.py                  #  plane Poiseuille vs the analytic parabola
 uv run test_duct.py                        #  square duct vs the Fourier series
+uv run test_channel_order.py               #  channel: spatial AND temporal order
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
 
 # --- differentiability
@@ -247,8 +248,13 @@ Honest about what this is and is not:
   rather than returning a quietly wrong field
 - **Unsteady wall-bounded cases lose time accuracy** to the projection boundary layer. The
   *spatial* wall treatment is 2nd order (square duct: 2.06, 2.04 against the analytic series)
-- **Chorin projection is the default** (matching PICT). `rotational`+`bdf2` gives 2nd order in
-  time but **diverges on wall-bounded domains** — it is usable only on fully periodic ones
+- **Chorin projection is the default** (matching PICT), so the default is 1st order in time.
+  `scheme='rotational', time_scheme='bdf2'` gives 2nd order, on periodic *and* wall-bounded
+  domains. It requires `pressure_coef='rowsum'` (now the automatic default for it) — with the
+  diagonal coefficient the accumulating schemes diverge
+- **Curvilinear grids need more than 2 PISO correctors** to reach the asymptotic temporal rate:
+  at warp 0.10, corr=2 gives ~0.8 and corr=8 gives 2.09. This is splitting error, not a change
+  of order
 - **`exact_A` is not fully exact** — $\Gamma = J/A_\text{diag}$, and hence $M$ and $G$, are
   still detached, which is the residual ~2% against finite differences
 - **Closure learning is not demonstrated** — at reachable resolutions the coarse solver's own

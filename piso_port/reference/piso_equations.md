@@ -251,21 +251,39 @@ Small, because the pieces already exist:
    $O(\Delta t)$ truncation error becomes the binding constraint and the rotational term buys
    nothing.
 
-**Caveat — now tested, and the hypothesis was wrong.** An earlier attempt at the incremental
-form showed the pressure drifting without bound (23 → 99 over ten steps). The suspicion recorded
-here was that the rotational term would cure it, being the boundary-condition inconsistency it
-is designed to remove.
+**Caveat — tested twice, and the second test overturned the first.**
 
-**It does not.** Measured on a wall-bounded channel (`test_poiseuille.py` configuration, walls
-in y, periodic in x and z), both variants blow up while Chorin stays stable:
+An early attempt at the incremental form showed the pressure drifting without bound. A first
+round of testing found both incremental and rotational blowing up on a wall-bounded channel
+while Chorin stayed stable, and this document previously concluded that *"incremental and
+rotational are usable only on fully periodic domains."*
 
-| scheme | Backward Euler | BDF2 |
-|---|---|---|
-| chorin | stable | stable |
-| incremental | diverges by step 39 | diverges by step 58 |
-| rotational | diverges by step 34 | diverges by step 50 |
+**That was wrong.** The divergence was a bug in the pressure-correction coefficient, not a
+property of the schemes:
 
-So **the incremental and rotational projections are usable only on fully periodic domains in
-this port**, where they do deliver 2nd order in time (1.91, 1.94, 1.97). On wall-bounded
-domains, use `scheme='chorin'`. The drift has a different cause than the pressure boundary
-condition, and finding it is open work.
+$\Gamma$ approximates how $A^{-1}$ responds to a pressure gradient, and was taken as
+$J/A_\text{diag}$ (PICT's `raP = 1/Adiag`). But **the conservative diffusion and SOU advection
+operators both have exactly zero row sum** — verified to 7e-14 on warped grids, periodic and
+walled — so for a smooth gradient the correct measure is the *row sum*, not the diagonal.
+Using the diagonal under-corrects by
+
+$$\frac{A_\text{diag}}{\text{rowsum}(A)} = 1 + 2\nu\Delta t\sum_i \frac{1}{h_i^2}$$
+
+which grows without bound as the grid refines: measured 1.60 at $\nu\Delta t/h^2 = 0.28$, 3.37
+at 1.20, 10.4 at 4.81. Chorin is immune because it *replaces* $p$ each step; the incremental
+schemes *accumulate* it, feeding that deficit back until the loop gain exceeds 1. The
+divergence threshold tracks the ratio exactly (stable below ~3, unstable above ~3.4).
+
+Since $\text{rowsum}(A) = J/\Delta t$ identically, $\Gamma_\text{rowsum} = \Delta t$ — grid-
+and $\Delta t$-independent, and the classic SIMPLEC choice. With it, every previously divergent
+case is stable, on Cartesian and warped grids alike.
+
+`pressure_coef` now defaults to `'diag'` for `chorin` (matching PICT exactly, where it is
+harmless) and `'rowsum'` for the accumulating schemes, with a setup check that **raises** if the
+unsound combination is requested above the ratio-3 threshold.
+
+A note on what this episode should teach: the symptom was a stability limit on
+$\nu\Delta t/h^2$ — the *explicit* diffusion number — in a scheme that solves diffusion
+implicitly. That is physically backwards (more diffusion must stabilise an implicit scheme) and
+should have been read immediately as evidence of a bug rather than recorded as a scheme
+limitation.

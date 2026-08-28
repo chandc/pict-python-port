@@ -131,37 +131,43 @@ rotational  bdf2   errs 3.50e-04  9.34e-05  2.43e-05  6.19e-06   orders 1.91, 1.
 order there deliberately, and the case is kept precisely because it demonstrates that the
 rotational correction — not the integrator — is what lifts the order.
 
-### 3c. Results, wall-bounded
+### 3c. Results, wall-bounded (channel)
+
+Measured on channel startup flow — walls in y, periodic in x/z, exact unsteady solution
+(`test_channel_order.py`):
 
 ```
-chorin       bdf2  errs 7.25e-03  6.36e-03  5.39e-03  4.22e-03   orders 0.19, 0.24, 0.35
-incremental  bdf2  errs 6.59e-03  3.18e-03  3.12e-03  2.07e-03   orders 1.05, 0.03, 0.59
-rotational   bdf2  errs 6.55e-03  3.13e-03  3.13e-03  2.06e-03   orders 1.06, 0.00, 0.61
+chorin / BE        errs 1.62e-03  8.07e-04  3.93e-04  1.84e-04   orders 1.01, 1.04, 1.10
+rotational / BDF2  errs 2.55e-04  6.27e-05  1.55e-05  3.83e-06   orders 2.03, 2.01, 2.02
 ```
 
-Rotational and incremental beat Chorin by roughly **2×** at the finest `dt`, but no variant
-recovers a clean order.
+**2nd order in time is achieved on a wall-bounded channel.** Chorin is 1st order by
+construction, as designed.
 
-**A later correction to this section.** It previously attributed the limit to the *spatial*
-boundary-flux stencil. That was wrong, and two wall-bounded validations against analytic
-solutions show why (`test_poiseuille.py`, `test_duct.py`):
+An earlier version of this document reported that 2nd order in time was *not* achievable on a
+channel. That was a consequence of the $\Gamma$ coefficient bug described in
+[`piso_equations.md`](piso_equations.md) §5, not a property of the scheme.
 
-| case | walls | result |
-|---|---|---|
-| plane Poiseuille, constant forcing | 2 | L2 error **1.0e-09** at every resolution |
-| plane Poiseuille, sine forcing | 2 | rates **2.16, 2.07** |
-| square duct vs Fourier series | 4 + corners | rates **2.06, 2.04** (full PISO loop) |
+### 3d. Curvilinear grids need more correctors, not a different order
 
-**The spatial wall treatment is 2nd order.** The limiter for *unsteady* wall-bounded flow is
-therefore the projection's temporal splitting — its numerical boundary layer — which is what
-the original diagnosis in §4 concluded from the error-versus-wall-distance profile before the
-re-attribution muddied it. The duct is steady, so that effect is absent and 2nd order appears.
+On warped grids the same 2nd order is reached, but `corrector_steps=2` is not enough to be
+asymptotic at coarse `dt`:
 
-Note the parabola case is exact to solver tolerance at *every* resolution: a central second
-difference is exact on quadratics, so the interior error vanishes by construction and anything
-left would be purely the wall treatment. There is nothing left.
+| warp | corr=2 | corr=4 | corr=8 |
+|---|---|---|---|
+| 0.05 | 1.55, 1.14, 1.74 | 1.68, 1.53, **2.02** | 1.83, 1.90, **2.05** |
+| 0.10 | 0.80, 0.79, 1.63 | 0.99, 1.15, **2.01** | 1.25, 1.65, **2.09** |
 
----
+This is the PISO operator-**splitting** error, not the time integrator and not the grid
+transformation — a spatial map cannot change a temporal order, and it does not. On a Cartesian
+channel the flow is 1D, advection vanishes, and the cell-centred and flux corrections agree, so
+2 correctors suffice; warping makes the flow genuinely 3D and opens a gap between them that each
+corrector shrinks.
+
+Worth recording how long this took to see: four hypotheses were tested and eliminated first
+(pressure-DC tolerance, momentum-DC sweep count, reference contamination, and the Picard lag —
+`picard_iters` was implemented specifically to test the last). Only a systematic bisection over
+scheme ingredients found it. Bisect before theorising.
 
 ## 4. Why the earlier walled measurement read ~1st order
 
