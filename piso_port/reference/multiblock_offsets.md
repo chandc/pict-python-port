@@ -1,0 +1,285 @@
+# Multi-block coupling: offsets, indexing, and the connection map
+
+How PICT joins several blocks into one solver. Written from the C++/CUDA source as
+preparation for extending this single-block port; every claim cites the file and line it
+came from.
+
+**The headline, because it determines everything else: PICT has no ghost cells.** Blocks are
+joined by (a) a *global index space* so that all blocks share one sparse matrix, and (b) a
+*connection map* that lets a cell read its neighbour directly out of the adjacent block's own
+array. Inter-block coupling is therefore **implicit** — it lives in the matrix, not in an
+outer iteration.
+
+---
+
+## 1. Why not ghost cells
+
+| | ghost cells (explicit) | one global matrix (PICT) |
+|---|---|---|
+| coupling | lagged one iteration | exact, inside the solve |
+| pressure Poisson | Schwarz iteration; convergence degrades as blocks are added | single CG solve, block-count independent |
+| per-block code | simpler | needs global indexing |
+| adjoint | reintroduces a fixed point to differentiate | one `LinearSolve`, existing adjoint applies |
+
+Pressure is globally elliptic: a disturbance anywhere is felt everywhere immediately. Lagging
+the interface turns one elliptic solve into an iteration between subdomains, and the iteration
+count grows with the number of blocks. That is the case against ghost cells for the pressure
+equation, and it is presumably why PICT went implicit.
+
+---
+
+## 2. The two offsets
+
+Assigned once, in `Domain::...` (`domain_structs.cpp:2562-2569`):
+
+```cpp
+index_t csrSize = 0;  totalSize = 0;
+for (auto block : blocks) {
+    block->csrOffset    = csrSize;      // start of this block's entries in the CSR value array
+    block->globalOffset = totalSize;    // start of this block's cells in the global cell numbering
+    csrSize   += block->ComputeCSRSize();
+    totalSize += block->getStrides().w; // = nx*ny*nz for this block
+}
+```
+
+Two different offsets because a CSR matrix has two different arrays to index into.
+
+### 2a. `globalOffset` — the cell (row) numbering
+
+Blocks are numbered consecutively. If block $b$ has $N_b = n_x n_y n_z$ cells:
+
+$$\texttt{globalOffset}_b = \sum_{b' < b} N_{b'}, \qquad
+\text{global row of local cell } f \;=\; \texttt{globalOffset}_b + f$$
+
+```
+        block 0 (N0 = 64)      block 1 (N1 = 48)     block 2 (N2 = 96)
+      ┌───────────────────┬──────────────────┬────────────────────────┐
+rows  │ 0 ............ 63 │ 64 .......... 111│ 112 ............... 207│
+      └───────────────────┴──────────────────┴────────────────────────┘
+        globalOffset = 0     globalOffset = 64   globalOffset = 112
+```
+
+Used directly when writing rows — `PISO_multiblock_cuda_kernel.cu:3657`:
+
+```cpp
+s_domain.C.row[s_block.globalOffset + flatPos + 1] = row.endOffset + s_block.csrOffset;
+```
+
+The local flat index itself is the ordinary lexicographic one
+(`grid_definitions.h`, `flattenIndex`):
+
+$$f = x + s_y\,y + s_z\,z, \qquad s_y = n_x,\; s_z = n_x n_y$$
+
+### 2b. `csrOffset` — the value/column-index array
+
+Rows have **different lengths**, so the offset into the value array is *not*
+`globalOffset × rowsize`. It accumulates the actual entry counts
+(`domain_structs.cpp:2151`):
+
+$$\texttt{ComputeCSRSize}(b) \;=\; \underbrace{N_b\,(2d+1)}_{\text{full stencil everywhere}}
+\;-\; \sum_{\text{faces }F \text{ unconnected}} A_F$$
+
+where $d$ is the spatial dimension and $A_F$ is the face's cell count. Each cell would have
+$2d+1$ entries (itself plus two neighbours per axis); a cell sitting on an **unconnected**
+boundary has no neighbour that way, so one entry is subtracted per such cell.
+
+```
+  a 4x3 block (d = 2, full stencil 2d+1 = 5),  -x and +y CLOSED,  +x and -y CONNECTED
+
+                 entries per cell
+                ┌───┬───┬───┬───┐
+   +y closed →  │ 3 │ 4 │ 4 │ 4 │   +y row loses one; the corner loses two
+                ├───┼───┼───┼───┤
+                │ 4 │ 5 │ 5 │ 5 │   interior cells keep all 5
+                ├───┼───┼───┼───┤
+                │ 4 │ 5 │ 5 │ 5 │
+                └───┴───┴───┴───┘
+                  ↑
+                -x closed (this column loses one)
+
+   sum = 53   =   N(2d+1) - A(-x) - A(+y)   =   12*5 - 3 - 4   =   53
+```
+
+**Connected faces are not subtracted** — that is the whole point. A cell on a connected face
+keeps its full stencil, and the missing neighbour is supplied by the adjacent block. The
+implicit coupling is exactly those retained entries.
+
+### 2c. Row start and length
+
+`getCSRMatrixRowEndOffsetFromBlockBoundaries3D`
+(`PISO_multiblock_cuda_kernel.cu:252-312`) returns, for one cell, its row length and the
+running end-offset. It starts from the dense assumption and subtracts:
+
+$$\texttt{rowEndOffset} = (f+1)(2d+1) - \!\!\sum_{\text{closed faces}}\!\! (\text{cells before and including } f \text{ that touch that face})$$
+
+The per-axis subtractions are closed-form counts, not loops — e.g. for the $-x$ face, the
+number of cells up to and including $f$ that lie on it is $\lfloor f/n_x\rfloor + 1$:
+
+```cpp
+if (isEmptyBound(0, block.boundaries)) {              // -x closed
+    rowEndOffset -= (flatPos / block.size.x) + 1;
+    if (pos.x == 0) --rowSize;
+}
+```
+
+and the row start is then
+
+$$\texttt{rowStart} = \texttt{rowEndOffset} - \texttt{rowSize} + \texttt{csrOffset}$$
+
+Note `isEmptyBound` (`:188`) counts **Dirichlet, varying-Dirichlet and gradient** boundaries as
+"empty". `CONNECTED_GRID` and `PERIODIC` are *not* empty — they keep their entry.
+
+---
+
+## 3. The connection map: `axes`
+
+A `ConnectedBoundary` stores only two things
+(`domain_structs_gpu.h`, `ConnectedBoundaryGPU`):
+
+```cpp
+struct ConnectedBoundaryGPU {
+    index_t connectedGridIndex;   // which block
+    U4      axes;                 // how the two blocks are oriented relative to each other
+};
+```
+
+### 3a. The bit encoding
+
+Faces and axes share one encoding (`PISO_multiblock_cuda_kernel.cu:199-221`):
+
+$$\texttt{bound} = 2\,a + u, \qquad
+a = \texttt{bound} \gg 1 \;(\text{axis}), \qquad
+u = \texttt{bound} \,\&\, 1 \;(0 = \text{lower},\, 1 = \text{upper})$$
+
+```
+   bound:   0     1     2     3     4     5
+   meaning -x    +x    -y    +y    -z    +z
+   axis     0     0     1     1     2     2
+   upper    0     1     0     1     0     1
+```
+
+`axes.a[k]` uses the same layout, but there the low bit means **the connection is reversed
+along that direction**, not "upper face" (`:322`).
+
+`axes.a[0]` describes the *connection axis* — which of the neighbour's axes is normal to the
+shared face, and at which end. `axes.a[1]` and `axes.a[2]` describe the two transverse
+directions, **relative to the boundary axis**, via
+$\;\texttt{getAxisRelativeToOther}(a, a_\text{bnd}, d) = (a - a_\text{bnd}) \bmod d\;$ (`:243`).
+
+That relative numbering is what lets one encoding serve all six faces.
+
+### 3b. Reading the neighbour
+
+`computeConnectedPos` (`:327-346`) maps a local cell position to the corresponding position in
+the neighbour's own array:
+
+```cpp
+index_t connectedAxis = p_cb->axes.a[0] >> 1;
+connectedPos.a[connectedAxis] = (p_cb->axes.a[0] & 1)
+      ? p_connectedBlock->size.a[connectedAxis] - 1 - borderOffset    // attach at the upper end
+      : borderOffset;                                                 // attach at the lower end
+
+for (k = 1, 2) {                                    // the two transverse directions
+    axis          = (boundaryDim + k) % numDims;    // local transverse axis
+    connectedAxis = p_cb->axes.a[k] >> 1;           // which neighbour axis it maps to
+    connectedPos.a[connectedAxis] = (p_cb->axes.a[k] & 1)
+          ? p_connectedBlock->size.a[connectedAxis] - 1 - pos.a[axis] // reversed
+          : pos.a[axis];                                             // aligned
+}
+```
+
+In words, with $\pi$ the axis permutation and $r_k \in \{0,1\}$ the reversal flags:
+
+$$q_{\pi(0)} = \begin{cases} 0 & r_0 = 0\\ m_{\pi(0)}-1 & r_0 = 1\end{cases}
+\qquad
+q_{\pi(k)} = \begin{cases} p_{a_k} & r_k = 0\\ m_{\pi(k)} - 1 - p_{a_k} & r_k = 1\end{cases}$$
+
+for $k = 1,2$, where $p$ is the local position, $q$ the neighbour position, $m$ the neighbour's
+sizes, and $a_k = (a_\text{bnd}+k) \bmod d$.
+
+```
+  aligned (r1 = 0)                    reversed (r1 = 1)
+
+  block A        block B              block A        block B
+  j=0 ─────────── j'=0                j=0 ───────┐   j'=3
+  j=1 ─────────── j'=1                j=1 ─────┐ └── j'=2
+  j=2 ─────────── j'=2                j=2 ───┐ └──── j'=1
+  j=3 ─────────── j'=3                j=3 ─┐ └────── j'=0
+        shared face                            shared face
+```
+
+The permutation handles blocks meeting with different axis orders (an L-shaped or O-shaped
+arrangement); the flips handle blocks meeting with opposite orientation.
+
+### 3c. Sign flips on vector quantities
+
+Positions permute, but **vector components must also be signed**. In `computeFluxesNDLoop`
+(`:1553`) a flux read from a connected block is negated when both sides attach at the same
+end:
+
+```cpp
+const bool otherIsUpper = boundIsUpper(block.boundaries[bound].cb.axes.a[0]);
+if (otherIsUpper == isUpper) velN = -velN;   // upper-to-upper or lower-to-lower: invert
+fluxes[bound] = (velN + velC) * 0.5f;
+```
+
+If A's *upper* face meets B's *upper* face, the two outward normals point at each other, so
+the contravariant component measured in B has the opposite sign in A's frame. Getting this
+wrong does not crash — it quietly leaks mass at the interface.
+
+---
+
+## 4. Where it lands in the matrix
+
+`PISO_build_pressure_matrix` (`:4841-4852`) treats a connected neighbour exactly like an
+interior one, only fetching its coefficient from the other block:
+
+```cpp
+if (atBound && s_block.boundaries[bound].type == BoundaryType::CONNECTED_GRID) {
+    p_block = s_domain.blocks + s_block.boundaries[bound].cb.connectedGridIndex;
+    tempPos = computeConnectedPosWithChannel(tempPos, dim, &s_block.boundaries[bound].cb, s_domain);
+}
+const scalar_t alphaN = getLaplaceCoefficientOrthogonalDimSwitch(tempPos, p_block, s_domain.numDims);
+```
+
+and the column index is that neighbour's **global** index. So the assembled matrix looks like
+
+$$M \;=\;
+\begin{pmatrix}
+M_{00} & C_{01} & \\
+C_{01}^{\mathsf T} & M_{11} & C_{12}\\
+& C_{12}^{\mathsf T} & M_{22}
+\end{pmatrix}$$
+
+— block-diagonal per block, plus off-diagonal coupling blocks $C$ carrying exactly the
+retained face entries from §2b. **Symmetry survives** provided both sides agree on the shared
+face coefficient, which is the one physical requirement the implementation must guarantee.
+
+---
+
+## 5. What this port would need
+
+| Piece | Effort | Risk |
+|---|---|---|
+| `globalOffset` threading through the assemblers | mechanical, pervasive | low — touches every builder |
+| `csrOffset` / variable row lengths | moderate | low, and testable in isolation |
+| `axes` permutation + flips | small in code | **highest** — silent wrong answers |
+| Interface metric agreement | small | **high** — silent mass leak |
+| Flux sign inversion | small | **high** — silent mass leak |
+
+Two things to test first, before any physics:
+
+1. **Connect a block to itself** across a periodic pair. The result must reproduce the existing
+   single-block periodic case *exactly*, to machine precision. That validates offsets,
+   `axes`, and sign handling in one shot against a known answer.
+2. **Assert interface symmetry**: build the global matrix and check `abs(M - M.T).max() == 0`
+   as the single-block path already does. An interface metric mismatch shows up there
+   immediately, rather than as a divergence floor twenty steps into a run.
+
+### Interaction with the deferred correction
+
+Worth flagging before starting: on warped grids the pressure deferred correction already needs
+10–320 sweeps, and each is a **global** solve across all blocks. Multi-block multiplies the
+existing performance cliff. Making the cross terms implicit (a 19-point stencil, measured 27×
+faster and 24× lighter for the adjoint) would be worth sequencing *before* multi-block rather
+than after.

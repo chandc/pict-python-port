@@ -233,6 +233,7 @@ uv run run_tgv3d.py      && uv run plot_tgv3d.py
 | [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How spatial and temporal orders were established, why they must be measured separately, and the energy-budget check convergence rates cannot give you |
 | [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | The discrete adjoint: why velocity needs a genuine transpose solve, pressure does not, and how to handle its singular null space |
 | [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | The six-stage CNN coupling plan, with test problems, acceptance criteria, and the two criteria the measurements overturned |
+| [`multiblock_offsets.md`](piso_port/reference/multiblock_offsets.md) | How PICT joins blocks: the global index space, CSR offsets, and the axis-permutation connection map — with diagrams. PICT uses **no ghost cells**; coupling is implicit in one global matrix |
 | [`implementation_plan.md`](piso_port/reference/implementation_plan.md) · [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The original plan, the Phase 1–3 narrative, and the collocated-vs-staggered investigation |
 
 ---
