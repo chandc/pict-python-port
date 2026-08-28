@@ -211,6 +211,7 @@ uv run test_stokes_channel.py              #  5 checks: wall-bounded Stokes eige
 uv run test_outflow.py                     #  inflow/outflow BCs (Dong path has a known defect)
 uv run stokes_decay_study.py               #  decay + decay rate over a 100x amplitude drop
 uv run stokes_error_matrix.py              #  5x5 error matrix in (resolution, dt)
+uv run test_energy_conservation.py         #  6 checks: inviscid KE conservation (central vs SOU)
 
 # --- differentiability
 uv run --with torch adjoint_piso.py            # adjoint identity + FD gradient check
