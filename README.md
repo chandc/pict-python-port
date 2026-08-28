@@ -204,6 +204,7 @@ uv run test_poiseuille.py                  #  plane Poiseuille vs the analytic p
 uv run test_duct.py                        #  square duct vs the Fourier series
 uv run test_channel_order.py               #  channel: spatial AND temporal order
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
+uv run test_implicit_cross.py              # 10 checks: implicit vs deferred cross terms
 
 # --- differentiability
 uv run --with torch adjoint_piso.py            # adjoint identity + FD gradient check

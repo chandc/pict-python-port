@@ -42,7 +42,7 @@ class PISOSolver:
                  momentum_dc_iters=2, pressure_dc_iters=500, pressure_tol=1e-12,
                  boundary_flux_mode='from_velocity', periodic=None,
                  scheme='chorin', time_scheme='be', convection='sou',
-                 pressure_coef='auto', picard_iters=1):
+                 pressure_coef='auto', picard_iters=1, implicit_cross=False):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -94,6 +94,18 @@ class PISOSolver:
         # O(dt) lag; repeating the step with A rebuilt from the latest u* removes it. Costs
         # nothing when advection vanishes (a Cartesian channel), matters when it does not.
         self.picard_iters = picard_iters
+        # Treat the non-orthogonal cross terms IMPLICITLY instead of by deferred correction.
+        # Applied matrix-free: the operator is exactly M_orth - J*cross(.), i.e. precisely the
+        # fixed point the deferred correction converges to, so both paths must agree.
+        #
+        # Solver choice is forced by symmetry, which is NOT the same in both cases:
+        #   fully periodic -> symmetric to 1e-15, CG is valid
+        #   any wall axis  -> asymmetric at ~1e-2, because the one-sided edge differences in
+        #                     np.gradient are not self-adjoint. CG is then INVALID and
+        #                     BiCGStab is used instead.
+        # (The 7-point deferred-correction path keeps CG valid in both cases, since its
+        # implicit operator is the symmetric orthogonal part alone.)
+        self.implicit_cross = implicit_cross
         self.u_prev = None          # for BDF2
         if all(self.per):
             # Only a FULLY periodic domain has no prescribed boundary faces at all. With mixed
@@ -217,6 +229,85 @@ class PISOSolver:
         return out
 
     # -------------------------------------------------------------- pressure
+    def _solve_pressure_implicit(self, M, F, coef, free, div_F):
+        """
+        One solve with the FULL operator (orthogonal + cross), applied matrix-free.
+
+        Removes the deferred-correction loop entirely: the operator here IS the fixed point
+        that loop converges to, so the two paths must agree to solver tolerance (verified to
+        1e-14..1e-12 in test_implicit_cross.py).
+
+        What this does NOT do is buy extra warp range. Removing the Picard iteration removes
+        its contraction limit, but that limit sits at warp ~0.18 and so does the point where
+        this grid family tangles (min(J) < 0), so there is no valid mesh on which the extra
+        range could be used. The demonstrated gain is speed at warps that actually mesh:
+        2.1x-17.8x, growing with warp because that is where the lag costs most.
+        """
+        J = self.J
+        N = J.size
+
+        def apply(xf):
+            # The operator must be EXACTLY the fixed point of the deferred correction:
+            #     M p - J * D(Phi_cross(p))  =  -J * div F
+            # so the cross part has to come from pressure_face_fluxes with the SAME `coef`,
+            # not from compute_cross_diffusion -- the latter is unscaled by coef and uses a
+            # different discretisation, which would silently solve a different system.
+            x = np.zeros(N)
+            x[free] = xf
+            xg = x.reshape(self.shape)
+            Phi_c = pressure_face_fluxes(xg, J, self.metrics, self.h, coef=coef,
+                                         include_orth=False, include_cross=True,
+                                         periodic=self.per)
+            full = (M @ x) - (J * divergence_from_fluxes(Phi_c, J, self.h)).ravel()
+            return full[free]
+
+        nf = len(free)
+        op = splinalg.LinearOperator((nf, nf), matvec=apply, dtype=float)
+        b = J * (-div_F)
+        b = b - b.mean()                       # compatibility: M is singular
+        rhs = b.flat[free]
+
+        # Precondition with the ORTHOGONAL part alone -- i.e. exactly the operator the deferred
+        # correction inverts on every sweep. That choice is not arbitrary:
+        #
+        #     M^-1 A  =  I - M^-1 J D(Phi_cross(.))
+        #
+        # and the spectral radius of that second term IS the deferred-correction contraction
+        # ratio (0.31 / 0.59 / 0.92 at warp 0.05 / 0.10 / 0.15). So the preconditioned spectrum
+        # clusters at 1 with spread rho, which Krylov resolves in a handful of iterations
+        # instead of the ~rho^k of a fixed-point sweep -- and, unlike that sweep, it keeps
+        # converging when rho > 1. Without this the matrix-free operator is a net loss: one
+        # application costs ~32x a sparse matvec (191.5 us vs 5.9 us at 1024 cells), so the
+        # iteration count has to come down hard for the implicit path to pay for itself.
+        # Measured with the preconditioner: 4.8x / 8.4x / 17.8x on the cavity at warp
+        # 0.05 / 0.10 / 0.15, replacing 22 / 48 / 121 sweeps with 8 / 12 / 17 Krylov steps.
+        lu = splinalg.splu(M[free][:, free].tocsc())
+        prec = splinalg.LinearOperator((nf, nf), matvec=lu.solve, dtype=float)
+
+        self._implicit_its = 0
+        def _count(_x):
+            self._implicit_its += 1
+
+        # CG needs a symmetric operator. With a wall axis the one-sided edge differences make
+        # the full operator non-self-adjoint, so BiCGStab is required there.
+        if all(self.per):
+            sol, info = splinalg.cg(op, rhs, M=prec, rtol=1e-13, maxiter=20000,
+                                    callback=_count)
+        else:
+            sol, info = splinalg.bicgstab(op, rhs, M=prec, rtol=1e-13, maxiter=20000,
+                                          callback=_count)
+            if info != 0:
+                sol, info = splinalg.lgmres(op, rhs, M=prec, rtol=1e-13, maxiter=5000,
+                                            callback=_count)
+        if info != 0:
+            print(f"  warning: implicit-cross pressure solve info={info}")
+
+        p = np.zeros_like(J)
+        p.flat[free] = sol
+        Phi = pressure_face_fluxes(p, J, self.metrics, self.h, coef=coef,
+                                   include_cross=True, periodic=self.per)
+        return p, correct_fluxes(F, Phi)
+
     def _solve_pressure(self, F, coef):
         """
         Solve  M p' = J*(D(cross(p')) - div F)  by deferred correction, then return p' and
@@ -238,17 +329,24 @@ class PISOSolver:
         #     warp 0.05 -> 0.31 (21 sweeps)     warp 0.15 -> 0.92 (321 sweeps)
         #     warp 0.10 -> 0.59 (49 sweeps)     warp 0.20 -> 1.27  DIVERGES
         #
-        # So there is a hard usable limit near warp ~0.18, and it is a property of deferred
-        # correction itself, not of the solver around it. Under-relaxation does not lift it
-        # (the ratio is real and > 1). Nor does boosting the implicit coefficient while
-        # compensating the explicit term by the same amount -- that leaves the fixed point
-        # identical and merely drives the iteration toward the identity map, converging more
-        # slowly, which I measured before discarding the idea. Lifting the limit properly
-        # means making the cross terms implicit (a 19- or 27-point matrix), which is a
-        # deliberate future change, not a tuning knob. Past the limit this warns loudly rather
-        # than returning a quietly wrong field.
+        # CAVEAT on that last row, measured later: this grid family TANGLES at warp 0.18 --
+        # min(J) goes negative -- so the ratio > 1 at warp 0.20 was measured on a mesh with
+        # negative cell volumes. The deferred-correction limit and the grid-validity limit
+        # coincide here, and it is wrong to read the 1.27 as evidence of a solver limit alone.
+        # Whatever the cause, under-relaxation does not lift it. Nor does boosting the implicit
+        # coefficient while compensating the explicit term by the same amount -- that leaves
+        # the fixed point identical and merely drives the iteration toward the identity map,
+        # converging more slowly, which I measured before discarding the idea.
+        #
+        # implicit_cross=True removes the loop entirely (see _solve_pressure_implicit) and is
+        # 2.1x-17.8x faster at warps that actually mesh. It does NOT buy extra warp range, because
+        # there is no valid grid past 0.18 on which to use it. Past the limit this warns loudly
+        # rather than returning a quietly wrong field.
         M = build_conservative_diffusion_matrix(*self.shape, *self.h, J, self.metrics,
                                                 coef=coef, periodic=self.per)
+
+        if self.implicit_cross:
+            return self._solve_pressure_implicit(M, F, coef, free, div_F)
         M_ff = M[free][:, free].tocsr()
 
         def rhs_fn(p):
@@ -266,6 +364,7 @@ class PISOSolver:
 
         p, dc = deferred_correction(np.zeros_like(J), free, rhs_fn, solve_fn,
                                     max_iters=self.pressure_dc_iters, tol=self.pressure_tol)
+        self._dc_sweeps = dc['iters']   # counterpart of _implicit_its, for like-for-like cost
         if not dc['converged']:
             print(f"  warning: pressure deferred correction did not converge "
                   f"({dc['iters']} sweeps at omega={dc['omega']}) -- grid warp likely past ~0.18")

@@ -157,7 +157,15 @@ Contraction ratio $\rho$ and sweeps to converge, $n=16$ (pressure solve):
 | 0.05 | 0.31 | 21 | fine |
 | 0.10 | 0.59 | 49 | fine |
 | 0.15 | 0.92 | 321 | converges, slow |
-| **0.20** | **1.27** | — | **diverges** |
+| **0.20** | **1.27** | — | **diverges — but see below** |
+
+**Correction to that last row.** Measuring the Jacobian afterwards shows this grid family
+*tangles* at warp 0.18: $\min(J)$ goes negative (0.15 → $+1.14\times10^{-2}$, 0.18 →
+$-4.24\times10^{-1}$, 0.25 → $-1.75$). The $\rho = 1.27$ was therefore measured on a mesh with
+negative cell volumes, and cannot be read as a solver limit alone — the deferred-correction
+limit and the grid-validity limit coincide here. Both solve paths blow up at warp 0.25 at every
+$\Delta t$ tried (0.02 / 0.005 / 0.001), which is the signature of a tangled grid, not of a CFL
+limit. The practical consequence is in §4.4.
 
 The same mechanism governs the momentum solve, where it additionally depends on $\nu$: neither
 warp nor $\nu$ alone predicts failure, only their combination (a warp-only sweep and a
@@ -184,8 +192,64 @@ $$\Phi = \underbrace{\beta c_f \tfrac{\Delta p}{h}}_{\text{implicit}}
 
 leaves $\Phi$ — and therefore the fixed point — identical, and drives the iteration toward the
 identity map, converging *more slowly*. It was implemented, measured, and removed. The genuine
-remedy is to make the cross terms **implicit** (19- or 27-point matrix), still SPD and CG-able,
-at the cost of a denser stencil.
+remedy is to make the cross terms **implicit**, which is now implemented — see §4.4.
+
+### 4.4 Implicit cross terms (`implicit_cross=True`)
+
+The lag exists only because the cross flux $\Psi(p)$ sits on the RHS. Moving it to the left
+gives the system the deferred correction was converging *to*:
+
+$$\underbrace{M p}_{\text{7-point, orthogonal}} \;-\; J\,\nabla\!\cdot\Psi(p) \;=\; -J\,\nabla\!\cdot F$$
+
+Both paths therefore have the same solution, and the equivalence test measures exactly that.
+
+**Applied matrix-free.** $\Psi$ is re-used from `pressure_face_fluxes(include_orth=False,
+include_cross=True)` with the *same* `coef`, so the operator is bit-for-bit the fixed point of
+the loop it replaces. (Assembling a 19-point matrix would also work; matrix-free keeps the two
+paths provably identical, which is what makes the equivalence gate meaningful.)
+
+**The preconditioner is the whole ballgame.** One application of the full operator costs about
+**32× a sparse matvec** (191.5 µs vs 5.9 µs at 1024 cells; the cross term alone is 185.6 µs), so
+unpreconditioned this is a net *loss* — measured at 0.13×–0.94× on the cavity. Preconditioning with the orthogonal part $M$
+alone — precisely the operator each deferred sweep already inverts — gives
+
+$$M^{-1}A \;=\; I - M^{-1}J\,\nabla\!\cdot\Psi(\cdot)$$
+
+whose second term has spectral radius equal to the contraction ratio $\rho$ of §4.2. The
+preconditioned spectrum thus clusters at 1 with spread $\rho$, which Krylov resolves in a few
+iterations instead of the $\rho^k$ decay of a fixed-point sweep.
+
+**Measured** (`test_implicit_cross.py`, $n=16$, 20 steps, iteration counts for the final solve):
+
+| problem | warp | deferred | implicit | speed-up | same answer to |
+|---|---|---|---|---|---|
+| 2D cavity | 0.00 | 0.25 s, 3 sweeps | 0.19 s, 1 Krylov | 1.33× | 3.8e-14 |
+| 2D cavity | 0.05 | 1.64 s, 22 sweeps | 0.34 s, 8 Krylov | 4.76× | 5.4e-13 |
+| 2D cavity | 0.10 | 3.61 s, 48 sweeps | 0.43 s, 12 Krylov | 8.36× | 4.9e-13 |
+| 2D cavity | 0.15 | 9.67 s, 121 sweeps | 0.54 s, 17 Krylov | **17.84×** | 7.1e-13 |
+| channel | 0.00 | 0.12 s, 2 sweeps | 0.10 s, 1 Krylov | 1.23× | 0.0 |
+| channel | 0.05 | 0.39 s, 11 sweeps | 0.19 s, 5 Krylov | 2.05× | 1.6e-14 |
+| channel | 0.10 | 0.53 s, 16 sweeps | 0.22 s, 7 Krylov | 2.41× | 6.5e-14 |
+| channel | 0.15 | 0.72 s, 22 sweeps | 0.25 s, 9 Krylov | 2.84× | 3.5e-14 |
+
+The gain grows with warp, which is the point: it is largest exactly where the lag hurts most.
+The channel gains less because its walls lie on one axis only, so it carries fewer cross terms
+to begin with.
+
+**Two honest caveats.**
+
+1. **Symmetry is boundary-condition dependent.** Measuring $\langle Av,w\rangle$ vs
+   $\langle v,Aw\rangle$ on a $12^3$ warp-0.10 grid: fully periodic gives **1.35e-16**
+   (symmetric, CG valid); walls in $y$ give **2.96e-02** and the cavity's walls in $x,z$ give
+   **1.12e-01** — the one-sided edge differences are not self-adjoint. This
+   retracts the earlier "still SPD and CG-able" claim above, which had only been checked on the
+   periodic case. The code uses CG when all axes are periodic and BiCGStab (LGMRES fallback)
+   otherwise.
+2. **It does not buy extra warp range.** The tempting claim — that removing the Picard iteration
+   lifts the warp-0.18 limit — is not demonstrable, because that limit is also where the mesh
+   tangles. There is no valid grid beyond it on which to show the benefit. The demonstrated
+   value is speed at warps that actually mesh. `test_implicit_cross.py` asserts $\min(J) > 0$ at
+   every warp it exercises so this cannot silently regress into testing on a broken mesh.
 
 ---
 
