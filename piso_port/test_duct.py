@@ -12,6 +12,12 @@ cross-section with an exact Fourier-series solution:
 This is a considerably stronger wall test than plane Poiseuille: the cross-section is genuinely
 2D, there are FOUR walls rather than two, and it has CORNERS, where the boundary treatment of
 two walls meets. Plane Poiseuille cannot exercise any of that.
+
+Scheme: runs `chorin`, but `rotational`+BDF2 now gives IDENTICAL results (L2 agreeing to four
+digits at every resolution, converging in 26 steps rather than 32). That is expected for a
+steady problem -- both reach the same steady state, only the path differs. Before the
+pressure-coefficient fix (see piso_equations.md section 5) the accumulating schemes diverged
+here, which is why chorin was chosen; that constraint no longer applies.
 """
 import sys, warnings
 import numpy as np
