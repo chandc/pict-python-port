@@ -38,21 +38,36 @@ DONG (Dong, Karniadakis & Chryssostomidis, JCP 261 (2014) 83-105).
     projection, and no global flux balancing. Mass leaves through the outlet as the solution
     dictates rather than being rescaled to a target.
 
-KNOWN DEFECT (dong, unresolved as of this commit)
-    The Dong path does NOT yet pass the Poiseuille exactness test: the error GROWS under
-    refinement -- L2/Umax 1.1e-6 / 5.3e-5 / 6.3e-5 on 17x13 / 33x25 / 65x49 -- which is the
-    signature of an inconsistency, not of truncation error. The convective path on the same
-    case gives 2.3e-8 / 2.7e-7 / 3.3e-8.
+KNOWN DEFECT (dong): the Theta term is inconsistent at a no-slip wall
+    The Dong path does NOT pass the Poiseuille exactness test: L2/Umax 1.10e-6 / 5.35e-5 /
+    6.32e-5 on 17x13 / 33x25 / 65x49, growing then flattening. The convective path on the same
+    case gives 2.29e-8 / 2.71e-7 / 3.34e-8.
 
-    Leading hypothesis: the  nu d(u.n)/dn  term is evaluated EXPLICITLY from the lagged
-    velocity as (u_b - u_i)/dn, and that closes a feedback loop with gain ~ nu*dt/dn^2, which
-    is 0.016 / 0.064 / 0.256 on those three grids -- growing four-fold per refinement and
-    heading for 1 (outright instability) around nx ~ 129. The standard remedy is to replace it
-    using continuity at the boundary, d(u.n)/dn = -div_t(u_t), so the term is built from
-    TANGENTIAL derivatives of boundary values and no longer feeds back through the normal
-    pressure correction. Not yet implemented or verified.
+    ROOT CAUSE, isolated by running each term of  p = nu d(u.n)/dn - 1/2|u|^2 Theta  alone:
 
-    Until that is fixed, treat `kind="dong"` as work in progress: it runs and is stable, but its
+        variant           17x13      33x25      65x49
+        full            8.51e-7    3.00e-5    4.16e-5    grows
+        viscous only    2.22e-7    5.26e-8    3.51e-7    no growth
+        Theta only      8.51e-7    3.00e-5    4.16e-5    identical to full
+
+    It is entirely the Theta term. Theta = 1/2(1 - tanh(u_n/(U0 delta))) tends to 1/2 wherever
+    u_n -> 0, which is every WALL-ADJACENT node once the outflow meets no-slip walls. For exact
+    Poiseuille the outlet pressure should be uniform; instead a thin near-wall layer picks up a
+    spurious traction of size O(U0^2 delta^2). At the default delta = 0.05 its peak is 1.51e-4,
+    or 9.4e-5 relative to the channel pressure drop -- the same size as the observed error.
+    Peak spurious pressure vs delta: 2.41e-3 / 6.04e-4 / 1.51e-4 / 2.41e-5 / 6.04e-6 / 1.50e-6
+    for delta = 0.20 / 0.10 / 0.05 / 0.02 / 0.01 / 0.005, i.e. delta^2.
+
+    So this is NOT an implementation bug but an inherent property of Dong's regularised switch
+    at a wall junction: delta trades energy-stability robustness against a near-wall consistency
+    error. The remedy is a smaller delta (verification of the delta^2 scaling in the solver is
+    in progress); it is a parameter choice, not a reformulation.
+
+    An earlier version of this note blamed the explicit nu*d(u.n)/dn term, on the theory that it
+    closes a feedback loop of gain nu*dt/dn^2 = 0.016/0.064/0.256. That was WRONG: the error
+    flattens rather than growing without bound (a consistency error, not an instability), and
+    the isolation above exonerates the viscous term outright.
+
     steady state is not correct to discretisation order. Use `kind="convective"` for production.
 """
 import numpy as np

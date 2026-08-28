@@ -324,6 +324,7 @@ uv run run_tgv3d.py      && uv run plot_tgv3d.py
 | [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | The discrete adjoint: why velocity needs a genuine transpose solve, pressure does not, and how to handle its singular null space |
 | [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | The six-stage CNN coupling plan, with test problems, acceptance criteria, and the two criteria the measurements overturned |
 | [`stokes_verification.md`](piso_port/reference/stokes_verification.md) | Both Stokes eigenvalue problems in full — setup, methodology, the 5x5 error matrix, the opposite-sign error finding, and the defects the tests exposed (including four in the tests themselves) |
+| [`outflow_bcs.md`](piso_port/reference/outflow_bcs.md) | Inflow/outflow: what PICT actually does (and the cell-centred factor of 2 that does not transfer to a node-on-boundary grid), both treatments, results, and the diagnosis of the Dong defect — including the first hypothesis that turned out wrong |
 | [`multiblock_offsets.md`](piso_port/reference/multiblock_offsets.md) | How PICT joins blocks: the global index space, CSR offsets, and the axis-permutation connection map — with diagrams. PICT uses **no ghost cells**; coupling is implicit in one global matrix |
 | [`implementation_plan.md`](piso_port/reference/implementation_plan.md) · [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The original plan, the Phase 1–3 narrative, and the collocated-vs-staggered investigation |
 
