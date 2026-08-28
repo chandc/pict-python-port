@@ -321,6 +321,34 @@ reference, so no external data is needed, and every orientation, index-offset an
 bug fails it loudly. Currently verified: the neighbour set (192 pairs, identical) and the
 coordinates (0.00e+00 difference).
 
+### Seam geometry: landed and exact
+
+`Domain.pad_coords` ghost-pads a block from its neighbours across the connection map, and
+`Domain.block_metrics` computes that block's Jacobian and metrics from the padded coordinates.
+On a **warped** grid split 2 and 4 ways, the per-block metrics equal the single-block metrics to
+**0.00e+00** — every one of the nine metric tensors and the Jacobian — and the reassembled
+domain satisfies the GCL at **1.8e-15**.
+
+Two bugs it caught, both of which produce a plausible-looking field rather than an obvious
+failure:
+
+- **The periodic self-wrap needs a one-period shift.** Coordinates are not periodic — $x$ ramps
+  and jumps back — so a wrapped ghost must be displaced by one period or it injects a spurious
+  derivative. This is the *same* defect `compute_numerical_metrics` had when it hardcoded
+  `period=1`; here the period is per-block data rather than an assumption.
+- **Both sides of an axis must be read before either is attached.** Padding the lower side and
+  then reading the upper side from the modified array makes the upper ghosts a copy of the lower
+  ones. Silent, and it corrupts the Jacobian at both ends.
+
+A third was in the *test*, not the code: checking the GCL block-by-block with
+`periodic=(True,...)` wraps each block onto **itself** at a face that is really connected to a
+neighbour, measuring a seam that does not exist and reporting ~1e-1. GCL must be checked on the
+reassembled domain until a genuinely seam-aware divergence exists.
+
+**Current limitation:** at most one connected axis per block. Two would need the neighbour's
+coordinates themselves padded along the other connected axis (recursive padding).
+`validate()` reports this rather than silently mis-padding the corners.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

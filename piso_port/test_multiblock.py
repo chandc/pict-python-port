@@ -137,6 +137,66 @@ if __name__ == "__main__":
               np.allclose(xs, Xf, atol=1e-15),
               f"max |x_split - x_single| = {np.abs(xs - Xf).max():.2e}")
 
+    print("\n6. SPLIT EQUALS WHOLE for the GEOMETRY: seam metrics from real neighbour data")
+    # The sharpest form of the test: warp the grid, split it, and require the per-block metrics
+    # computed through the connection map to equal the single-block metrics EXACTLY. Any error
+    # in the orientation transform, the period shift, or the ghost ordering shows up here.
+    from phase1_grid_metrics import make_grid, compute_numerical_metrics
+    from phase2_operators import compute_divergence
+    NTOT, NY, NZ, WARP = 8, 6, 4, 0.08
+    P3 = (True, True, True)
+    xs, ys, zs, hx, hy, hz = make_grid((NTOT, NY, NZ), warp=WARP, periodic=P3)
+    Jref, mref = compute_numerical_metrics(xs, ys, zs, hx, hy, hz, periodic=P3)
+
+    def warped_split(n_split):
+        nxb = NTOT // n_split
+        blks = []
+        for b in range(n_split):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NY, NZ), xs[sl], ys[sl], zs[sl], (hx, hy, hz))
+            for a in (1, 2):
+                blk.faces[face_id(a, 0)] = blk.faces[face_id(a, 1)] = "periodic"
+            blks.append(blk)
+        cs = []
+        for b in range(n_split):
+            nb = (b + 1) % n_split
+            # the last block wraps to the first: its neighbour lies one PERIOD away in x
+            sh = (1.0, 0.0, 0.0) if nb == 0 and n_split > 1 else (0.0, 0.0, 0.0)
+            cs.append(Connection(b, face_id(0, 1), nb, face_id(0, 0), shift=sh))
+        return Domain(blks, cs)
+
+    for n_split in (2, 4):
+        dd = warped_split(n_split)
+        nxb = NTOT // n_split
+        Jerr = merr = 0.0
+        Js, ms = [], []
+        for b in range(n_split):
+            Jb, mb = dd.block_metrics(b)
+            sl = slice(b * nxb, (b + 1) * nxb)
+            Jerr = max(Jerr, np.abs(Jb - Jref[sl]).max())
+            for k in mref:
+                merr = max(merr, np.abs(mb[k] - mref[k][sl]).max())
+            Js.append(Jb); ms.append(mb)
+        check(f"{n_split}-block warped metrics equal the single-block metrics",
+              Jerr < 1e-14 and merr < 1e-14,
+              f"max|J-Jref| {Jerr:.2e}, max|metric-ref| {merr:.2e} (warp {WARP})")
+
+        # GCL must be checked on the REASSEMBLED domain, not block by block. A block-local
+        # divergence with periodic=(True,...) would wrap each block onto ITSELF at a face that
+        # is actually connected to a neighbour -- measuring a seam that does not exist and
+        # reporting ~1e-1. A genuinely seam-aware divergence needs the operator layer, which is
+        # not built yet; reassembling is the honest check available today.
+        Jg = np.concatenate(Js, axis=0)
+        mg = {k: np.concatenate([m[k] for m in ms], axis=0) for k in mref}
+        o = np.ones_like(Jg)
+        gcl = 0.0
+        for comp in range(3):
+            f = [o * (1 if c == comp else 0) for c in range(3)]
+            gcl = max(gcl, np.abs(compute_divergence(*f, Jg, mg, hx, hy, hz,
+                                                     periodic=P3)).max())
+        check(f"{n_split}-block reassembled metrics satisfy the GCL", gcl < 1e-11,
+              f"max |div(uniform field)| = {gcl:.2e} over the reassembled domain")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

@@ -65,7 +65,15 @@ class Connection:
     plausible-looking field with a scrambled seam.
     """
 
-    def __init__(self, ba, fa, bb, fb, axes=(0, 1), flips=(False, False)):
+    def __init__(self, ba, fa, bb, fb, axes=(0, 1), flips=(False, False),
+                 shift=(0.0, 0.0, 0.0)):
+        # Physical displacement to ADD to block B's coordinates when viewed from
+        # A. Zero for blocks that simply abut; for a WRAP-AROUND connection (the
+        # last block of a periodic strip joining back to the first) it is the
+        # domain period, exactly as wrap_pad_coords shifts a periodic seam. Omit
+        # it and the ghost coordinates jump backwards across the seam, collapsing
+        # the Jacobian there -- the same failure the `period` bug produced.
+        self.shift = np.asarray(shift, dtype=float)
         self.ba, self.fa, self.bb, self.fb = ba, fa, bb, fb
         self.axes = tuple(axes)
         self.flips = tuple(bool(f) for f in flips)
@@ -89,6 +97,15 @@ class Connection:
             out = out[:, ::-1]
         return out
 
+    def unalign(self, arr_a):
+        """Inverse of align(): reorder an A-face array into B's face ordering."""
+        out = arr_a
+        if self.flips[1]:
+            out = out[:, ::-1]
+        if self.flips[0]:
+            out = out[::-1]
+        return np.transpose(out, np.argsort(self.axes))
+
     def __repr__(self):
         return (f"Connection(block {self.ba} {FACE_NAMES[self.fa]} <-> "
                 f"block {self.bb} {FACE_NAMES[self.fb]}, axes={self.axes}, flips={self.flips})")
@@ -97,10 +114,16 @@ class Connection:
 class Block:
     """One structured block: a shape, physical coordinates, and six face types."""
 
-    def __init__(self, shape, x, y, z, h, faces=None):
+    def __init__(self, shape, x, y, z, h, faces=None, period=(1.0, 1.0, 1.0)):
         self.shape = tuple(shape)
         self.x, self.y, self.z = x, y, z
         self.h = tuple(h)
+        # Physical length of one period along each axis, for PERIODIC faces. Coordinates are
+        # not themselves periodic -- x ramps and then jumps back -- so a wrapped ghost must be
+        # shifted by one period or it injects a spurious derivative and collapses the Jacobian
+        # at the seam. This is the same defect that `compute_numerical_metrics` had when it
+        # hardcoded period=1; here it is per-block data, not an assumption.
+        self.period = np.asarray(period, dtype=float)
         # face type per face id: 'wall' | 'periodic' | 'connected' | 'inflow' | 'outflow'
         self.faces = list(faces) if faces is not None else ["wall"] * 6
 
@@ -157,6 +180,15 @@ class Domain:
                 problems.append(str(e)); continue
             if len(set(ga.tolist()) & set(gb.tolist())):
                 problems.append(f"{c}: a cell is connected to itself")
+        for bi, blk in enumerate(self.blocks):
+            na = sum(1 for a in range(3)
+                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1)))
+            if na > 1:
+                problems.append(
+                    f"block {bi} has connections on {na} axes. pad_coords currently supports at "
+                    f"most one connected axis per block: the corner ghosts would need the "
+                    f"neighbour's coordinates padded along the other connected axis, which is "
+                    f"not implemented. Reported rather than silently mis-padded.")
         # No node may be stored by both blocks. Checking the SPACING against 1/n is wrong --
         # a connected axis's spacing is set by the GLOBAL cell count across all blocks in that
         # direction, not by one block's count -- so the invariant is stated directly on the
@@ -183,3 +215,115 @@ class Domain:
     def __repr__(self):
         return (f"Domain({len(self.blocks)} blocks, {self.n_cells} cells, "
                 f"{len(self.connections)} connections)")
+
+    # ------------------------------------------------------------------ geometry across seams
+
+    def _neighbour_of(self, b, fid):
+        """(other_block, other_face, to_my_ordering, shift) for a connected face, else None."""
+        for c in self.connections:
+            if c.ba == b and c.fa == fid:
+                return c.bb, c.fb, c.align, +c.shift
+            if c.bb == b and c.fb == fid:
+                return c.ba, c.fa, c.unalign, -c.shift
+        return None
+
+    def _ghost_layers(self, b, fid, width, src=None):
+        """
+        `width` coordinate layers just beyond face `fid` of block b, in b's own index ordering
+        and physical frame. Returns a list of 3 arrays shaped like b's face with a leading
+        layer axis, ordered NEAREST-first, or None if the face is not connected/periodic.
+        """
+        blk = self.blocks[b]
+        axis, side = face_axis_side(fid)
+        kind = blk.faces[fid]
+
+        if kind == "periodic":
+            # Self-wrap, taken from `src` -- the CURRENT partially padded field, not the raw
+            # block. That is what makes the corner ghosts right: by the time a periodic axis is
+            # padded the connected axis already carries its neighbour's data, and wrapping the
+            # padded field carries that into the corner.
+            out = []
+            src_f = src if src is not None else (blk.x, blk.y, blk.z)
+            for comp, f in enumerate(src_f):
+                sl = [slice(None)] * 3
+                sl[axis] = slice(0, width) if side == 1 else slice(-width, None)
+                lay = np.moveaxis(f[tuple(sl)], axis, 0)
+                lay = lay if side == 1 else lay[::-1]          # nearest-first
+                # one-period shift: moving one period along axis `axis` displaces the physical
+                # point by period[axis] in physical component `axis`, and nothing else
+                jump = blk.period[axis] if comp == axis else 0.0
+                out.append(lay + (jump if side == 1 else -jump))
+            return out
+
+        nb = self._neighbour_of(b, fid)
+        if nb is None:
+            return None
+        ob, ofid, to_mine, shift = nb
+        other = self.blocks[ob]
+        oaxis, oside = face_axis_side(ofid)
+        out = []
+        for comp, f in enumerate((other.x, other.y, other.z)):
+            sl = [slice(None)] * 3
+            sl[oaxis] = slice(0, width) if oside == 0 else slice(-width, None)
+            lay = np.moveaxis(f[tuple(sl)], oaxis, 0)          # (width, t0, t1) in B's ordering
+            if oside == 1:
+                lay = lay[::-1]                                # nearest-first
+            lay = np.stack([to_mine(l) for l in lay])          # into my face ordering
+            out.append(lay + shift[comp])
+        return out
+
+    def pad_coords(self, b, width=2):
+        """
+        Coordinates of block b ghost-padded across every periodic/connected face.
+
+        Returns (xp, yp, zp, lo, hi) with lo/hi the per-axis pad widths actually applied. Wall
+        faces are NOT padded -- there is nothing beyond them and the metric formula falls back
+        to one-sided differences there, exactly as the single-block code does.
+
+        Both sides of an axis are read BEFORE either is attached. Padding side 0 and then
+        reading side 1 from the modified array makes the upper ghosts a copy of the lower ones,
+        which is silent and produces a plausible-looking but wrong Jacobian.
+
+        LIMITATION: at most ONE connected axis per block. Two would need the neighbour's
+        coordinates themselves padded along the other connected axis (recursive padding), which
+        is not implemented; validate() reports it rather than mis-padding the corners.
+        """
+        blk = self.blocks[b]
+        fields = [blk.x.copy(), blk.y.copy(), blk.z.copy()]
+        lo, hi = [0, 0, 0], [0, 0, 0]
+
+        # Connected axes first, while every block still has its original extents so a
+        # neighbour's face layer matches this block's face. Periodic axes then wrap the
+        # already-padded field, which is what fills the corners correctly.
+        conn_axes = [a for a in range(3)
+                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1))]
+        for axis in conn_axes + [a for a in range(3) if a not in conn_axes]:
+            g = {}
+            for side in (0, 1):
+                g[side] = self._ghost_layers(b, face_id(axis, side), width, src=fields)
+            if g[0] is None and g[1] is None:
+                continue
+            new_fields = []
+            for comp in range(3):
+                parts = []
+                if g[0] is not None:
+                    parts.append(np.moveaxis(g[0][comp][::-1], 0, axis))   # farthest-first
+                parts.append(fields[comp])
+                if g[1] is not None:
+                    parts.append(np.moveaxis(g[1][comp], 0, axis))
+                new_fields.append(np.concatenate(parts, axis=axis))
+            fields = new_fields
+            if g[0] is not None:
+                lo[axis] = width
+            if g[1] is not None:
+                hi[axis] = width
+        return fields[0], fields[1], fields[2], lo, hi
+
+    def block_metrics(self, b, width=2):
+        """Jacobian and metrics for block b, with seams resolved by real neighbour data."""
+        from phase1_grid_metrics import _metrics_core
+        blk = self.blocks[b]
+        xp, yp, zp, lo, hi = self.pad_coords(b, width)
+        J, m = _metrics_core(xp, yp, zp, *blk.h)
+        sl = tuple(slice(lo[a] or None, -hi[a] if hi[a] else None) for a in range(3))
+        return J[sl], {k: v[sl] for k, v in m.items()}
