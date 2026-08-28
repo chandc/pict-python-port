@@ -210,8 +210,9 @@ paths provably identical, which is what makes the equivalence gate meaningful.)
 
 **The preconditioner is the whole ballgame.** One application of the full operator costs about
 **32× a sparse matvec** (191.5 µs vs 5.9 µs at 1024 cells; the cross term alone is 185.6 µs), so
-unpreconditioned this is a net *loss* — measured at 0.13×–0.94× on the cavity. Preconditioning with the orthogonal part $M$
-alone — precisely the operator each deferred sweep already inverts — gives
+unpreconditioned this is a net *loss* — measured at 0.13×–0.94× on the cavity. Preconditioning
+with the orthogonal part $M$ alone — precisely the operator each deferred sweep already inverts
+— gives
 
 $$M^{-1}A \;=\; I - M^{-1}J\,\nabla\!\cdot\Psi(\cdot)$$
 
@@ -219,26 +220,108 @@ whose second term has spectral radius equal to the contraction ratio $\rho$ of �
 preconditioned spectrum thus clusters at 1 with spread $\rho$, which Krylov resolves in a few
 iterations instead of the $\rho^k$ decay of a fixed-point sweep.
 
+It has to be an **incomplete** factorisation, and it has to be **reused**. Both were learned
+the hard way on the $32^3$ duct, which is the first genuinely 3D test here — everything before
+it was quasi-2D (1024 cells), where these costs are invisible:
+
+| preconditioner | setup @ 32768 unknowns | nnz(L+U) | Krylov its | total/solve |
+|---|---|---|---|---|
+| exact `splu` | 8.48 s | 45.0 M | 16 | 9.21 s |
+| `spilu(1e-3)` | 1.17 s | 3.1 M | 70 | **1.66 s** |
+| `spilu(1e-5)` | 1.10 s | 4.1 M | 94 | 1.89 s |
+| `spilu(1e-7)` | 1.12 s | 4.1 M | 118 | 2.13 s |
+
+Exact LU on a 7-point 3D matrix suffers catastrophic fill-in — 45 million nonzeros — and since
+it was rebuilt on every pressure solve it made the implicit path **100× slower** than deferred
+correction on the $32^3$ duct (564 s vs 5.8 s) *while performing zero Krylov iterations*: the
+entire cost was setup. With `spilu`, setup still dominated (1.10 s of each 1.59 s solve, × 66
+solves per run), so the factorisation is now **cached and refactored only when $\|c\|$ has
+drifted more than 5%**. A preconditioner must be spectrally close, never current; a stale one
+costs iterations, not correctness. On the $32^3$ duct at warp 0.10 the two fixes together took the implicit path from 0.37× to 2.7× (measured 4.84× on an earlier, more sheared version of that grid, which was replaced — see §4.5).
+
+One consequence: **CG is not used at all.** An incomplete factorisation is not symmetric, so
+preconditioned CG would be invalid even in the fully periodic case where the bare operator *is*
+symmetric. BiCGStab throughout, paying two applications per iteration.
+
 **Measured** (`test_implicit_cross.py`, $n=16$, 20 steps, iteration counts for the final solve):
 
 | problem | warp | deferred | implicit | speed-up | same answer to |
 |---|---|---|---|---|---|
-| 2D cavity | 0.00 | 0.25 s, 3 sweeps | 0.19 s, 1 Krylov | 1.33× | 3.8e-14 |
-| 2D cavity | 0.05 | 1.64 s, 22 sweeps | 0.34 s, 8 Krylov | 4.76× | 5.4e-13 |
-| 2D cavity | 0.10 | 3.61 s, 48 sweeps | 0.43 s, 12 Krylov | 8.36× | 4.9e-13 |
-| 2D cavity | 0.15 | 9.67 s, 121 sweeps | 0.54 s, 17 Krylov | **17.84×** | 7.1e-13 |
-| channel | 0.00 | 0.12 s, 2 sweeps | 0.10 s, 1 Krylov | 1.23× | 0.0 |
-| channel | 0.05 | 0.39 s, 11 sweeps | 0.19 s, 5 Krylov | 2.05× | 1.6e-14 |
-| channel | 0.10 | 0.53 s, 16 sweeps | 0.22 s, 7 Krylov | 2.41× | 6.5e-14 |
-| channel | 0.15 | 0.72 s, 22 sweeps | 0.25 s, 9 Krylov | 2.84× | 3.5e-14 |
+| 2D cavity | 0.00 | 0.24 s, 3 sweeps | 0.42 s, 17 Krylov | 0.58× | 3.4e-13 |
+| 2D cavity | 0.05 | 1.63 s, 22 sweeps | 0.45 s, 19 Krylov | 3.65× | 1.3e-12 |
+| 2D cavity | 0.10 | 3.61 s, 48 sweeps | 0.53 s, 23 Krylov | 6.77× | 4.1e-13 |
+| 2D cavity | 0.15 | 9.64 s, 121 sweeps | 0.60 s, 26 Krylov | **16.16×** | 7.1e-13 |
+| channel | 0.00 | 0.12 s, 2 sweeps | 0.13 s, 4 Krylov | 0.93× | 1.0e-11 |
+| channel | 0.05 | 0.39 s, 11 sweeps | 0.17 s, 6 Krylov | 2.24× | 1.5e-14 |
+| channel | 0.10 | 0.54 s, 16 sweeps | 0.21 s, 8 Krylov | 2.63× | 6.5e-14 |
+| channel | 0.15 | 0.72 s, 22 sweeps | 0.23 s, 8 Krylov | 3.08× | 3.6e-14 |
 
 The gain grows with warp, which is the point: it is largest exactly where the lag hurts most.
 The channel gains less because its walls lie on one axis only, so it carries fewer cross terms
-to begin with.
+to begin with. On an **orthogonal** grid the implicit path *loses* (0.58×, 0.93×) — correctly,
+since there are no cross terms to make implicit and it is paying pure overhead.
+
+### 4.5 Square duct: accuracy against an exact solution
+
+The cavity and channel tests above only show the two paths *agree*. The duct shows they are
+both **right**, because it has an exact Fourier-series solution.
+
+That required a new grid. `make_grid`'s warp displaces the walls — for
+`periodic=(True,False,False)` it sets $y = \eta + A\sin 2\pi\xi \sin 2\pi\zeta$, nonzero at
+$\eta = 0$ — so the duct stops being square and the series stops being the answer. The warp used
+in `test_duct_implicit.py` vanishes *on* the walls instead:
+
+$$x = \xi,\qquad
+y = \eta + A\sin\pi\eta\,\sin 2\pi\xi,\qquad
+z = \zeta + A\sin\pi\zeta\,\sin 2\pi\xi$$
+
+(An earlier version added $A\sin\pi\eta\sin\pi\zeta$ to $x$. It sheared the whole block into
+something that looked nothing like a duct, and measurement showed it bought essentially no
+non-orthogonality — $|g^{12}|/|g^{11}|$ = 0.334 vs 0.311 at $A=0.05$ — while degrading the worst
+cell angle, 31.0° vs 38.8° at $A=0.20$, and tangling at $A=0.25$ where this form is still valid.
+Removed.)
+
+The $\sin\pi\eta$ factor is zero at $\eta = 0,1$, so both $y$-walls stay exactly at $y = 0,1$
+(likewise $z$): the physical cross-section remains the unit square at every station, only the
+node distribution inside it moves, so $u(y,z)$ from the series is still exact. Meanwhile
+$\partial y/\partial\xi \neq 0$, so $g^{12}, g^{13}$ are genuinely nonzero. Verified: wall
+displacement 0.0e+00, GCL ~1e-13, and $\min(J) > 0$ through $A = 0.20$ — this family does *not*
+tangle at 0.18 the way the stock warp does.
+
+Mesh quality at the amplitudes used: worst cell angle 71° at $A=0.05$ and 58° at $A=0.10$
+(90° is orthogonal), with $\min(J)$ = 0.707 and 0.465. Both are meshes one could defend
+generating. $A=0.20$ reaches 39° and is a solver stress case, not a duct grid.
+
+| $A$ | $n$ | deferred | implicit | speed-up | L2 vs exact (both) |
+|---|---|---|---|---|---|
+| 0.00 | 8 / 16 / 32 | 0.19 / 0.74 / 6.95 s | 0.51 / 2.93 / 59.7 s | 0.38× / 0.25× / 0.12× | 5.97e-3 / 1.43e-3 / 3.49e-4 |
+| 0.05 | 8 / 16 / 32 | 1.05 / 5.72 / 64.5 s | 0.60 / 4.16 / 50.5 s | 1.75× / 1.38× / 1.28× | 6.93e-3 / 1.59e-3 / 4.16e-4 |
+| 0.10 | 8 / 16 / 32 | 1.68 / 11.5 / 158.6 s | 0.66 / 4.16 / 58.6 s | 2.56× / 2.76× / **2.71×** | 1.10e-2 / 2.47e-3 / 6.56e-4 |
+
+Convergence rates, **identical for both paths**: 2.06/2.04 at $A=0$, 2.12/1.94 at $A=0.05$,
+2.15/1.91 at $A=0.10$. So making the cross terms implicit costs nothing in accuracy — the L2
+errors agree to every printed digit — and the discretisation stays second order on a genuinely
+non-orthogonal grid.
+
+The duct speed-up (2.7× at $A=0.10$) is well below the cavity's 16×, and the reason is visible
+in the sweep counts: the duct's deferred correction needs 1333 sweeps where the cavity needs
+121, but the duct is also a steady problem run to convergence, so each of those sweeps starts
+from an excellent initial guess and costs little. The implicit path cannot exploit that — it
+restarts its Krylov solve each time. On an orthogonal grid it loses outright (0.12×–0.38×),
+which is correct: there are no cross terms to make implicit.
+
+A test-design trap worth recording: the stock duct test pins $n_x = 4$, which is fine on a
+Cartesian grid where $x$-resolution is irrelevant. Here the warp varies as $\sin 2\pi\xi$, so
+$n_x = 4$ under-resolves the streamwise metric variation and puts a **floor** under the error
+that refining $y,z$ cannot lift — rates collapsed to 0.61/0.10 and 0.24/0.01, in *both* paths.
+Measured at $n=16$, $A=0.05$: L2 = 6.35e-3 / 2.48e-3 / 1.62e-3 / 1.51e-3 for $n_x$ = 4/8/16/32,
+converging onto the Cartesian $n=16$ value of 1.43e-3. Refining $n_x$ with $n$ is what makes it
+a grid-convergence test rather than a measurement of the $n_x=4$ error.
 
 **Two honest caveats.**
 
-1. **Symmetry is boundary-condition dependent.** Measuring $\langle Av,w\rangle$ vs
+1. **Symmetry is boundary-condition dependent** (and moot, since the ILU is non-symmetric
+   anyway — see above). Measuring $\langle Av,w\rangle$ vs
    $\langle v,Aw\rangle$ on a $12^3$ warp-0.10 grid: fully periodic gives **1.35e-16**
    (symmetric, CG valid); walls in $y$ give **2.96e-02** and the cavity's walls in $x,z$ give
    **1.12e-01** — the one-sided edge differences are not self-adjoint. This

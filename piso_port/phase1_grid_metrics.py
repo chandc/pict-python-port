@@ -172,7 +172,8 @@ def make_grid(n, warp=0.0, periodic=None):
     z = ZETA + warp * s2(XI) * s2(ETA)
     return x, y, z, hs[0], hs[1], hs[2]
 
-def compute_numerical_metrics(x, y, z, dxi, deta, dzeta, periodic=None, width=2):
+def compute_numerical_metrics(x, y, z, dxi, deta, dzeta, periodic=None, width=2,
+                              period=(1.0, 1.0, 1.0)):
     """
     Metrics and Jacobian. For periodic axes the coordinates are ghost-padded with a
     one-period shift first (see wrap_pad_coords), the validated conservative formula is run
@@ -182,7 +183,10 @@ def compute_numerical_metrics(x, y, z, dxi, deta, dzeta, periodic=None, width=2)
     per = as_periodic(periodic)
     if not any(per):
         return _metrics_core(x, y, z, dxi, deta, dzeta)
-    xp, yp, zp = wrap_pad_coords(x, y, z, per, width)
+    # `period` must reach wrap_pad_coords: the ghost shift is the PHYSICAL length of one
+    # period, and defaulting it to 1 on a domain of length 2*pi injects a wrong seam
+    # derivative and collapses the Jacobian there. It was unreachable before.
+    xp, yp, zp = wrap_pad_coords(x, y, z, per, width, period=period)
     J, m = _metrics_core(xp, yp, zp, dxi, deta, dzeta)
     sl = tuple(slice(width, -width) if per[a] else slice(None) for a in range(3))
     return J[sl], {k: v[sl] for k, v in m.items()}

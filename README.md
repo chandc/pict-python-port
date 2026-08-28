@@ -205,6 +205,12 @@ uv run test_duct.py                        #  square duct vs the Fourier series
 uv run test_channel_order.py               #  channel: spatial AND temporal order
 uv run verify_discretization_examples.py   #  9 checks: doc examples vs the assembly code
 uv run test_implicit_cross.py              # 10 checks: implicit vs deferred cross terms
+uv run test_duct_implicit.py               # 18 checks: implicit cross vs the exact duct series
+uv run test_stokes_growth.py               #  6 checks: Stokes spectrum, periodic (sigma=-nu|k|^2)
+uv run test_stokes_channel.py              #  5 checks: wall-bounded Stokes eigenvalue -9.313739
+uv run test_outflow.py                     #  inflow/outflow BCs (Dong path has a known defect)
+uv run stokes_decay_study.py               #  decay + decay rate over a 100x amplitude drop
+uv run stokes_error_matrix.py              #  5x5 error matrix in (resolution, dt)
 
 # --- differentiability
 uv run --with torch adjoint_piso.py            # adjoint identity + FD gradient check

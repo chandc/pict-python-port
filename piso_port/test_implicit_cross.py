@@ -8,7 +8,7 @@ the operator solved there IS the fixed point that loop converges to, so the two 
 agree to solver tolerance.
 
 Making that pay off needs the right preconditioner. The full operator is applied matrix-free
-and one application costs ~28x a sparse matvec, so the implicit path only wins if the
+and one application costs ~32x a sparse matvec, so the implicit path only wins if the
 iteration count falls hard. Preconditioning with the orthogonal part M gives
 
     M^-1 A  =  I - M^-1 J D(Phi_cross(.))
@@ -97,13 +97,15 @@ check("tested warps use untangled grids", all(
     PISOSolver((16, 4, 16), warp=w, nu=0.01, dt=0.02, periodic=(False, True, False)).J.min() > 0
     for w in (0.05, 0.10, 0.15)), "min(J) > 0 at every warp exercised above")
 
-# --- symmetry is boundary-condition dependent, and that choice is load-bearing
+# --- symmetry is boundary-condition dependent, which is why CG is not used at all
 #
 # CG is only legal on a symmetric operator. Measuring <v,Aw> vs <Av,w> directly: the full
 # operator is symmetric under all-periodic BCs but NOT once a wall axis is present, because
-# the one-sided edge differences there are not self-adjoint. That is why the solver picks CG
-# only when every axis is periodic and BiCGStab otherwise. Gated here rather than left as a
-# comment, since silently feeding a non-symmetric operator to CG is exactly the kind of bug
+# the one-sided edge differences there are not self-adjoint. So CG was never an option for
+# walled problems. It is not used for the periodic ones either: the preconditioner is an
+# INCOMPLETE factorisation, which is not symmetric, so preconditioned CG would be invalid
+# even where the bare operator is fine. BiCGStab throughout. Gated here rather than left as
+# a comment, since silently feeding a non-symmetric operator to CG is exactly the kind of bug
 # that produces a plausible-looking wrong answer.
 print("\nOperator symmetry by boundary condition (12^3, warp 0.10)")
 from phase5_fluxes import pressure_face_fluxes, divergence_from_fluxes
@@ -125,11 +127,12 @@ for label, per in (("all periodic", (True, True, True)),
     a, b = v @ A(w), w @ A(v)
     sym[label] = abs(a - b) / max(abs(a), abs(b), 1e-30)
     print(f"   {label:24s} asymmetry {sym[label]:.2e}   "
-          f"{'symmetric -> CG' if sym[label] < 1e-10 else 'NOT symmetric -> BiCGStab'}")
-check("CG used only where the operator is symmetric",
+          f"{'symmetric (but ILU is not)' if sym[label] < 1e-10 else 'NOT symmetric'}")
+check("walled operators are non-symmetric, so BiCGStab is required",
       sym["all periodic"] < 1e-10 and sym["walls in y (channel)"] > 1e-10
       and sym["walls in x,z (cavity)"] > 1e-10,
-      "periodic symmetric; both walled cases are not, matching the solver's CG/BiCGStab switch")
+      "periodic symmetric; both walled cases are not -- and the ILU preconditioner is "
+      "non-symmetric regardless, so BiCGStab is used throughout")
 
 n_pass = sum(results)
 print(f"\n{'='*72}\n  {n_pass}/{len(results)} checks passed\n{'='*72}")

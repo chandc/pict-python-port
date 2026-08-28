@@ -34,6 +34,8 @@ from phase1_grid_metrics import (analytical_wavy_grid_mms, compute_numerical_met
 from phase2_operators import compute_gradient
 from phase3_momentum import (build_momentum_matrix_7point, build_conservative_diffusion_matrix,
                              compute_cross_diffusion, boundary_masks, deferred_correction)
+from outflow import (update_outflow_velocity, balance_boundary_fluxes,
+                     dirichlet_pressure_nodes)
 from phase5_fluxes import (compute_face_fluxes, divergence_from_fluxes,
                            pressure_face_fluxes, correct_fluxes)
 
@@ -42,7 +44,8 @@ class PISOSolver:
                  momentum_dc_iters=2, pressure_dc_iters=500, pressure_tol=1e-12,
                  boundary_flux_mode='from_velocity', periodic=None,
                  scheme='chorin', time_scheme='be', convection='sou',
-                 pressure_coef='auto', picard_iters=1, implicit_cross=False):
+                 pressure_coef='auto', picard_iters=1, implicit_cross=False,
+                 outflow=None):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -106,6 +109,12 @@ class PISOSolver:
         # (The 7-point deferred-correction path keeps CG valid in both cases, since its
         # implicit operator is the symmetric orthogonal part alone.)
         self.implicit_cross = implicit_cross
+        # Inflow/outflow faces (see outflow.py). Outflow is NOT a new solver mode: the outlet
+        # stays a Dirichlet velocity boundary whose value is updated each step, which is how
+        # PICT does it. What differs between the two kinds is the PRESSURE system -- a Dong
+        # outlet pins pressure there and so makes it non-singular, a convective one leaves it
+        # singular and therefore requires globally balanced boundary fluxes.
+        self.outflow = list(outflow) if outflow else []
         self.u_prev = None          # for BDF2
         if all(self.per):
             # Only a FULLY periodic domain has no prescribed boundary faces at all. With mixed
@@ -240,8 +249,14 @@ class PISOSolver:
         What this does NOT do is buy extra warp range. Removing the Picard iteration removes
         its contraction limit, but that limit sits at warp ~0.18 and so does the point where
         this grid family tangles (min(J) < 0), so there is no valid mesh on which the extra
-        range could be used. The demonstrated gain is speed at warps that actually mesh:
-        2.1x-17.8x, growing with warp because that is where the lag costs most.
+        range could be used -- with the stock make_grid warp, at least; a grid family whose
+        displacement vanishes ON the walls stays untangled further (see test_duct_implicit).
+
+        The demonstrated gain is speed at warps that actually mesh: up to 16x on the cavity and
+        2.7x on the 32^3 duct, growing with warp because that is where the lag costs most. On a
+        near-ORTHOGONAL grid it is a net loss (0.12x-0.93x) -- correctly so, since there are no
+        cross terms to make implicit and it pays pure overhead. Turn it on for warped grids,
+        not by default.
         """
         J = self.J
         N = J.size
@@ -279,26 +294,47 @@ class PISOSolver:
         # converging when rho > 1. Without this the matrix-free operator is a net loss: one
         # application costs ~32x a sparse matvec (191.5 us vs 5.9 us at 1024 cells), so the
         # iteration count has to come down hard for the implicit path to pay for itself.
-        # Measured with the preconditioner: 4.8x / 8.4x / 17.8x on the cavity at warp
-        # 0.05 / 0.10 / 0.15, replacing 22 / 48 / 121 sweeps with 8 / 12 / 17 Krylov steps.
-        lu = splinalg.splu(M[free][:, free].tocsc())
+        # Measured with the preconditioner: 3.7x / 6.8x / 16.2x on the cavity at warp
+        # 0.05 / 0.10 / 0.15, replacing 22 / 48 / 121 sweeps with 19 / 23 / 26 Krylov steps,
+        # and 2.7x on the 32^3 square duct at warp 0.10 (159s -> 59s).
+        # INCOMPLETE LU, not an exact one. An exact splu of this 7-point 3D matrix suffers
+        # catastrophic fill-in: at 32768 unknowns it costs 8.59 s and 45.0M nonzeros, versus
+        # 0.74 s and 1.67M for spilu(drop_tol=1e-3) -- 12x the setup and 27x the memory. Since
+        # the factorisation is rebuilt every pressure solve, exact LU made the implicit path
+        # 100x SLOWER than deferred correction on the 32^3 duct (564 s vs 5.8 s) while doing
+        # zero Krylov iterations: all of it was setup. The preconditioner only has to be
+        # spectrally close, not exact, so an incomplete factorisation is the right tool.
+        # ... and REUSED across solves, not rebuilt on each one. Measured per solve at 32^3:
+        # 1.59 s total of which 1.10 s is the factorisation, and a 33-step run does 66 solves,
+        # so setup was ~70% of the implicit path's entire cost. A preconditioner only has to be
+        # spectrally close, never current, so a stale one stays valid -- it costs extra Krylov
+        # iterations, not correctness. coef drifts as the velocity field evolves, so refactor
+        # only once it has moved appreciably.
+        cn = float(np.linalg.norm(coef))
+        cache = getattr(self, '_prec_cache', None)
+        if (cache is not None and cache['nf'] == nf
+                and abs(cn - cache['norm']) <= 0.05 * cache['norm']):
+            lu = cache['lu']
+        else:
+            lu = splinalg.spilu(M[free][:, free].tocsc(), drop_tol=1e-3, fill_factor=10)
+            self._prec_cache = {'nf': nf, 'norm': cn, 'lu': lu}
+            self._prec_builds = getattr(self, '_prec_builds', 0) + 1
         prec = splinalg.LinearOperator((nf, nf), matvec=lu.solve, dtype=float)
 
         self._implicit_its = 0
         def _count(_x):
             self._implicit_its += 1
 
-        # CG needs a symmetric operator. With a wall axis the one-sided edge differences make
-        # the full operator non-self-adjoint, so BiCGStab is required there.
-        if all(self.per):
-            sol, info = splinalg.cg(op, rhs, M=prec, rtol=1e-13, maxiter=20000,
-                                    callback=_count)
-        else:
-            sol, info = splinalg.bicgstab(op, rhs, M=prec, rtol=1e-13, maxiter=20000,
-                                          callback=_count)
-            if info != 0:
-                sol, info = splinalg.lgmres(op, rhs, M=prec, rtol=1e-13, maxiter=5000,
-                                            callback=_count)
+        # BiCGStab throughout, even where the operator itself is symmetric (the fully periodic
+        # case). CG would be legal there on the bare operator, but an INCOMPLETE factorisation
+        # is not symmetric, so preconditioned CG is not -- and a cheap non-symmetric
+        # preconditioner beats an exact symmetric one by a wide margin here. Paying BiCGStab's
+        # two applications per iteration is the better trade.
+        sol, info = splinalg.bicgstab(op, rhs, M=prec, rtol=1e-13, maxiter=20000,
+                                      callback=_count)
+        if info != 0:
+            sol, info = splinalg.lgmres(op, rhs, M=prec, rtol=1e-13, maxiter=5000,
+                                        callback=_count)
         if info != 0:
             print(f"  warning: implicit-cross pressure solve info={info}")
 
@@ -320,7 +356,19 @@ class PISOSolver:
         remove the constant.
         """
         J = self.J
-        free = np.arange(J.size)[1:]                    # pin cell 0 to fix the null space
+        # Dong outflow nodes carry a PRESCRIBED pressure, so they leave the unknown set and
+        # their columns move to the RHS -- the same elimination phase4_poisson.py uses for its
+        # Dirichlet walls. Two consequences, both wanted: the reduced matrix is no longer
+        # singular (so no pinned cell and no compatibility projection), and the continuity
+        # equation at those nodes is dropped, which is precisely what lets mass leave.
+        pD, pD_val = dirichlet_pressure_nodes(self, self.outflow)
+        self._has_pD = pD.size > 0
+        if self._has_pD:
+            mask = np.ones(J.size, dtype=bool); mask[pD] = False
+            free = np.arange(J.size)[mask]
+        else:
+            free = np.arange(J.size)[1:]                # pin cell 0 to fix the null space
+        self._pD, self._pD_val = pD, pD_val
         div_F = divergence_from_fluxes(F, J, self.h)
 
         # Non-orthogonal terms are carried explicitly (PICT's nonOrthoFlags). This is a Picard
@@ -339,7 +387,7 @@ class PISOSolver:
         # converging more slowly, which I measured before discarding the idea.
         #
         # implicit_cross=True removes the loop entirely (see _solve_pressure_implicit) and is
-        # 2.1x-17.8x faster at warps that actually mesh. It does NOT buy extra warp range, because
+        # up to 16x faster at warps that actually mesh (but slower on orthogonal grids). It does NOT buy extra warp range, because
         # there is no valid grid past 0.18 on which to use it. Past the limit this warns loudly
         # rather than returning a quietly wrong field.
         M = build_conservative_diffusion_matrix(*self.shape, *self.h, J, self.metrics,
@@ -349,11 +397,18 @@ class PISOSolver:
             return self._solve_pressure_implicit(M, F, coef, free, div_F)
         M_ff = M[free][:, free].tocsr()
 
+        M_fD = M[free][:, self._pD].tocsr() if self._has_pD else None
+
         def rhs_fn(p):
             Phi_cross = pressure_face_fluxes(p, J, self.metrics, self.h, coef=coef,
                                              include_orth=False, include_cross=True,
                                              periodic=self.per)
             b = J * (divergence_from_fluxes(Phi_cross, J, self.h) - div_F)
+            if self._has_pD:
+                # Non-singular: do NOT project the mean out. Subtracting it here would remove
+                # the genuine net inflow/outflow imbalance -- the very thing the outlet exists
+                # to carry -- and quietly return a wrong field.
+                return b.flat[free] - M_fD @ self._pD_val
             return (b - b.mean()).flat[free]        # enforce compatibility (M is singular)
 
         def solve_fn(rhs, x0):
@@ -362,7 +417,10 @@ class PISOSolver:
                 print(f"  warning: pressure CG info={info}")
             return sol
 
-        p, dc = deferred_correction(np.zeros_like(J), free, rhs_fn, solve_fn,
+        p0 = np.zeros_like(J)
+        if self._has_pD:
+            p0.flat[self._pD] = self._pD_val
+        p, dc = deferred_correction(p0, free, rhs_fn, solve_fn,
                                     max_iters=self.pressure_dc_iters, tol=self.pressure_tol)
         self._dc_sweeps = dc['iters']   # counterpart of _implicit_its, for like-for-like cost
         if not dc['converged']:
@@ -397,6 +455,12 @@ class PISOSolver:
 
     def _step_once(self, convect=None):
         J = self.J
+
+        if self.outflow:
+            update_outflow_velocity(self, self.outflow, self.dt)
+            # Only the singular (all-Neumann) case needs this; balance_boundary_fluxes skips
+            # Dong faces itself.
+            balance_boundary_fluxes(self, self.outflow)
 
         A = self._momentum_matrix(convect)
         us, vs, ws = self._solve_momentum(A)           # hbyA
