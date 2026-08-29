@@ -657,6 +657,42 @@ recomputed on every operator call of every step:
 Multi-block at 2 blocks is now marginally *faster* than single-block, and the obstacle smoke test
 went 6.1 s → 1.4 s.
 
+### Dong outflow across blocks
+
+Dong's outlet nodes carry a **prescribed pressure**, so they leave the global unknown set and the
+reduced matrix is non-singular: **no global pin, no compatibility projection, and no flux
+rescaling** — mass leaves as the solution dictates rather than being forced to a target. The
+convective outlet needs all three, because its system stays singular.
+
+On the Poiseuille reference, split 4 ways:
+
+| outflow | L2/Umax (4 blocks) | single block | vs single block |
+|---|---|---|---|
+| convective | 1.974e-06 | 1.974e-06 | 7.8e-10 |
+| **dong** | **1.583e-07** | 1.582e-07 | 1.3e-09 |
+
+Dong is **12× more accurate** here — the reverse of where it started, when a δ of 0.05 made it
+1570× *worse* than convective. `dong_delta` defaults to 0.01 for the reason established
+single-block: Θ does not vanish where $u_n \to 0$, so at a wall junction it leaves a spurious
+near-wall traction of size $O(U_0^2\delta^2)$.
+
+### The right topology beats a workaround: use an O-grid
+
+`plot_cylinder_blocks.py` builds the vortex-street mesh as a **4-block O-grid** around a circular
+cylinder — every block connected to its two azimuthal neighbours around a closed ring, with only
+the cylinder wall and the far field as boundaries.
+
+That choice is not cosmetic. The H-grid around a square body (`test_obstacle_topology.py`) has
+**reentrant corners**, where the blocks either side of a connection carry different tangential
+padding and the diagonal ghost lies inside the solid. Handling that needed edge replication, and
+getting the face coefficient from the wrong source there produced a corrected flux divergence of
+1.2e-01 while the CG residual looked healthy at 9e-11. **An O-grid has no reentrant corners at
+all**, so the problem does not arise rather than being worked around.
+
+Node placement follows the connection rule: the azimuthal direction closes on itself and is
+partitioned **without** duplicating the seam nodes, like a periodic axis; the radial direction has
+real boundaries at both ends and keeps both endpoints.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

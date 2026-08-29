@@ -833,6 +833,58 @@ if __name__ == "__main__":
               f"L2/Umax {Lmulti:.3e} (single block {Lsingle:.3e}); "
               f"max|u - u_single| = {np.abs(ue - so.u).max():.2e}")
 
+    print("\n19. DONG outflow across blocks (Dirichlet pressure, no pin, no flux balancing)")
+    # Dong's outlet nodes carry a PRESCRIBED pressure, so they leave the global unknown set and
+    # the reduced matrix is non-singular: no global pin, no compatibility projection, and --
+    # unlike the convective outlet -- no flux rescaling, because mass leaves as the solution
+    # dictates rather than being forced to a target.
+    for kind, tol in (("convective", 3e-6), ("dong", 3e-7)):
+        bcs = Outflow(axis=0, side=1, kind=kind, U_c=2.0 / 3.0 * UMo)
+        ss = PISOSolver((NXo, NYo, NZo), warp=1e-9, nu=NUo, dt=DTo, corrector_steps=2,
+                        periodic=(False, False, True), scheme="rotational", time_scheme="be",
+                        convection="central", boundary_flux_mode="from_velocity",
+                        pressure_coef="rowsum", pressure_tol=1e-12, outflow=[bcs],
+                        picard_iters=1)
+        ss.x, ss.y, ss.z, ss.h = so.x, so.y, so.z, so.h
+        ss.J, ss.metrics = _cnm2(ss.x, ss.y, ss.z, *ss.h, periodic=ss.per)
+        ss.u_bc[0, :, :] = profo[0]; ss.u_bc[:, 0, :] = 0; ss.u_bc[:, -1, :] = 0
+        hh = np.zeros_like(profo[-1], dtype=bool); hh[0, :] = True; hh[-1, :] = True
+        bcs.hold = hh
+        ss.u_bc[-1, :, :] = profo[-1]
+        ss.u[:] = profo; ss.u[:, 0, :] = 0; ss.u[:, -1, :] = 0
+        with _cl.redirect_stdout(_io.StringIO()):
+            for _ in range(600):
+                ss.step()
+        Ls = np.sqrt(np.mean((ss.u - profo) ** 2)) / UMo
+
+        nxb = NXo // 4
+        bl = []
+        for b in range(4):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NYo, NZo), so.x[sl], so.y[sl], so.z[sl], so.h)
+            blk.faces[face_id(1, 0)] = blk.faces[face_id(1, 1)] = "wall"
+            blk.faces[face_id(2, 0)] = blk.faces[face_id(2, 1)] = "periodic"
+            bl.append(blk)
+        dd2 = Domain(bl, [Connection(b, face_id(0, 1), b + 1, face_id(0, 0)) for b in range(3)])
+        m = MultiBlockPISO(dd2, NUo, DTo, 2, 1e-12, time_scheme="be", scheme="rotational",
+                           picard_iters=1)
+        m.outflow = [(3, face_id(0, 1), 2.0 / 3.0 * UMo, kind)]
+        for b in range(4):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            m.u[b] = profo[sl].copy(); m.u[b][:, 0, :] = 0; m.u[b][:, -1, :] = 0
+            m.u_bc[b][:, 0, :] = 0; m.u_bc[b][:, -1, :] = 0
+        m.u_bc[0][0, :, :] = profo[0]
+        m.u_bc[3][-1, :, :] = profo[-1]
+        m.u_bc[3][-1, 0, :] = 0; m.u_bc[3][-1, -1, :] = 0
+        for _ in range(600):
+            m.step()
+        ue = np.concatenate([m.u[b] for b in range(4)], axis=0)
+        Lm = np.sqrt(np.mean((ue - profo) ** 2)) / UMo
+        check(f"4-block {kind} outflow matches single-block and beats {tol:.0e}",
+              np.abs(ue - ss.u).max() < 1e-7 and Lm < tol and abs(Lm - Ls) < 1e-8,
+              f"L2/Umax {Lm:.3e} (single block {Ls:.3e}); "
+              f"max|u - u_single| = {np.abs(ue - ss.u).max():.2e}")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

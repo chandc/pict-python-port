@@ -53,6 +53,7 @@ class MultiBlockPISO:
         # is pure overhead.
         self.implicit_cross = implicit_cross
         self.momentum_dc_iters = 2
+        self.dong_delta = 0.01
         self._prec = None
         self.corrector_steps = corrector_steps
         self.tol = tol
@@ -116,7 +117,9 @@ class MultiBlockPISO:
         """Advective outflow update, then GLOBAL flux balancing."""
         from multiblock import face_axis_side, face_slice
         d = self.d
-        for (b, fid, U_c) in self.outflow:
+        for spec in self.outflow:
+            b, fid, U_c = spec[0], spec[1], spec[2]
+            kind = spec[3] if len(spec) > 3 else "convective"
             axis, side = face_axis_side(fid)
             blk = d.blocks[b]
             bs = face_slice(fid)
@@ -128,18 +131,25 @@ class MultiBlockPISO:
                          + (blk.z[bs] - blk.z[isl]) ** 2)
             # alpha = dt*U_c/h_n, WITHOUT PICT's factor 2: they are cell-centred, our nodes sit
             # ON the boundary, so the distance is h_n not h_n/2.
-            t = 1.0 - 1.0 / (1.0 + self.dt * abs(U_c) / dn)
+            # Dong's tangential condition is zero normal-gradient; the traction is carried by
+            # the DIRICHLET PRESSURE instead, so the velocity is simply copied inward.
+            t = 1.0 if kind == "dong" else 1.0 - 1.0 / (1.0 + self.dt * abs(U_c) / dn)
             for arr, bc in ((self.u, self.u_bc), (self.v, self.v_bc), (self.w, self.w_bc)):
                 bc[b][bs] = bc[b][bs] - t * (bc[b][bs] - arr[b][isl])
                 arr[b][bs] = bc[b][bs]
-        if not self.outflow:
+        # Flux balancing is needed ONLY for the singular all-Neumann system. A Dong outlet
+        # carries a Dirichlet pressure, which makes the system non-singular, so its flux must
+        # NOT be rescaled -- mass leaves as the solution dictates.
+        conv = [sp for sp in self.outflow if (sp[3] if len(sp) > 3 else "convective") != "dong"]
+        if not conv:
             return
-        faces = [(b, f) for (b, f, _) in self.outflow]
+        faces = [(sp[0], sp[1]) for sp in conv]
         fixed, free = d.boundary_flux_totals(self.u, self.v, self.w, faces)
         if abs(fixed + free) < 1e-14 or abs(free) < 1e-30:
             return
         scale = -fixed / free
-        for (b, fid, _) in self.outflow:
+        for sp in conv:
+            b, fid = sp[0], sp[1]
             bs = face_slice(fid)
             for arr, bc in ((self.u, self.u_bc), (self.v, self.v_bc), (self.w, self.w_bc)):
                 bc[b][bs] = bc[b][bs] * scale
@@ -216,7 +226,17 @@ class MultiBlockPISO:
         coef = self._unflat(coef_g)
 
         M = d.build_diffusion_matrix(self.Js, self.ms, coefs=[coef[b] for b in range(nb)])
-        free = np.arange(M.shape[0])[1:]                 # ONE pin for the whole domain
+        pD, pD_val = self._dong_nodes()
+        if pD.size:
+            # Dong outlet nodes carry a prescribed pressure, so they leave the unknown set and
+            # the reduced matrix is NON-SINGULAR: no global pin and no compatibility projection.
+            # Their continuity equation is dropped, which is what lets mass leave.
+            mask = np.ones(M.shape[0], dtype=bool); mask[pD] = False
+            free = np.arange(M.shape[0])[mask]
+            M_fD = M[free][:, pD].tocsr()
+        else:
+            free = np.arange(M.shape[0])[1:]             # ONE pin for the whole domain
+            M_fD = None
         M_ff = M[free][:, free].tocsr()
 
         phi_tot = {b: np.zeros(bl.shape) for b, bl in enumerate(d.blocks)}
@@ -237,12 +257,22 @@ class MultiBlockPISO:
             if div_star is None:
                 div_star = {b: divF[b].copy() for b in range(nb)}   # predictor divergence
             rhs = -(Jg * self._flat(divF))
-            rhs = rhs - rhs.mean()                        # compatibility (M is singular)
+            if M_fD is None:
+                rhs = rhs - rhs.mean()                    # compatibility (M is singular)
+            else:
+                # NON-singular: do NOT project the mean out. That would remove the genuine
+                # inflow/outflow imbalance the outlet exists to carry.
+                rhs = rhs - 0.0
+            b_free = rhs[free] - (M_fD @ pD_val if M_fD is not None else 0.0)
             if self.implicit_cross:
                 sol = self._solve_cross(M, M_ff, free, rhs, coef, Jg)
+            elif M_fD is not None:
+                sol, info = spla.bicgstab(M_ff, b_free, rtol=self.tol, maxiter=20000)
             else:
-                sol, info = spla.cg(M_ff, rhs[free], rtol=self.tol, maxiter=20000)
+                sol, info = spla.cg(M_ff, b_free, rtol=self.tol, maxiter=20000)
             pv = np.zeros(M.shape[0]); pv[free] = sol
+            if M_fD is not None:
+                pv[pD] = pD_val
             pp = self._unflat(pv)
             for b in range(nb):
                 gx, gy, gz = d.gradient(b, pp)
@@ -281,6 +311,51 @@ class MultiBlockPISO:
         for b in range(nb):
             div = max(div, np.abs(d.divergence(b, Fb[b], self.Js[b])).max())
         return div
+
+    def _dong_nodes(self):
+        """
+        (global indices, prescribed pressure) for every Dong outflow node.
+
+            p = nu d(u.n)/dn - 1/2 |u|^2 Theta,   Theta = 1/2 (1 - tanh(u.n / (U0 delta)))
+
+        delta = 0.01, not the 0.05 first used single-block: Theta does not vanish where u_n -> 0,
+        so at a no-slip wall junction it leaves a spurious near-wall traction of size
+        O(U0^2 delta^2). Measured single-block, that cost a factor of ~100 in accuracy.
+        """
+        from multiblock import face_axis_side, face_slice
+        d = self.d
+        idx, val = [], []
+        for spec in self.outflow:
+            if (spec[3] if len(spec) > 3 else "convective") != "dong":
+                continue
+            b, fid = spec[0], spec[1]
+            axis, side = face_axis_side(fid)
+            blk = d.blocks[b]
+            bs = face_slice(fid)
+            isl = [slice(None)] * 3
+            isl[axis] = 1 if side == 0 else -2
+            isl = tuple(isl)
+            _, mb = d.block_metrics_cached(b)
+            key = ("xi", "eta", "zeta")[axis]
+            nx_, ny_, nz_ = mb[f"{key}_x"][bs], mb[f"{key}_y"][bs], mb[f"{key}_z"][bs]
+            nrm = np.sqrt(nx_ ** 2 + ny_ ** 2 + nz_ ** 2)
+            sg = -1.0 if side == 0 else 1.0
+            nx_, ny_, nz_ = sg * nx_ / nrm, sg * ny_ / nrm, sg * nz_ / nrm
+            ub, vb, wb = self.u[b][bs], self.v[b][bs], self.w[b][bs]
+            un = ub * nx_ + vb * ny_ + wb * nz_
+            un_i = self.u[b][isl] * nx_ + self.v[b][isl] * ny_ + self.w[b][isl] * nz_
+            dn = np.sqrt((blk.x[bs] - blk.x[isl]) ** 2 + (blk.y[bs] - blk.y[isl]) ** 2
+                         + (blk.z[bs] - blk.z[isl]) ** 2)
+            U0 = max(float(np.max(np.abs(un))), 1e-12)
+            th = 0.5 * (1.0 - np.tanh(un / (U0 * self.dong_delta)))
+            pv = self.nu * (un - un_i) / dn - 0.5 * (ub ** 2 + vb ** 2 + wb ** 2) * th
+            idx.append(d.global_ids(b)[bs].ravel())
+            val.append(pv.ravel())
+        if not idx:
+            return np.empty(0, dtype=int), np.empty(0)
+        i = np.concatenate(idx); v = np.concatenate(val)
+        u_, first = np.unique(i, return_index=True)     # a corner may sit on two faces
+        return u_, v[first]
 
     def _solve_cross(self, M, M_ff, free, rhs, coef, Jg):
         """
