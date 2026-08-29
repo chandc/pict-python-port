@@ -133,6 +133,11 @@ Reproduced to **4.7e-4** at 65x48, spatial order 2.07/2.11/2.35.
 
 Three findings, none of which the periodic case alone could produce:
 
+- **Second order in time holds for NEAR-LINEAR flows only, unless `picard_iters=2`.** This
+  case has perturbation amplitude 1e-4, so convection is negligible and the O(Δt) lag in the
+  convecting velocity costs nothing. With convection active that lag dominates and the order
+  falls to ~1.1 — see
+  [`second_order_convective.md`](piso_port/reference/second_order_convective.md).
 - **~~The scheme is not second order in time for wall-bounded flow~~ — RETRACTED.** This
   previously read "1.68 with walls versus 2.01 periodic", blamed on the $O(\Delta t^{3/2})$
   near-wall splitting error of rotational projection. It was wrong: 1.68 came from one
@@ -331,6 +336,7 @@ uv run run_tgv3d.py      && uv run plot_tgv3d.py
 | [`accuracy_verification.md`](piso_port/reference/accuracy_verification.md) | How spatial and temporal orders were established, why they must be measured separately, and the energy-budget check convergence rates cannot give you |
 | [`nn_piso_coupling.md`](piso_port/reference/nn_piso_coupling.md) | The discrete adjoint: why velocity needs a genuine transpose solve, pressure does not, and how to handle its singular null space |
 | [`nn_piso_plan.md`](piso_port/reference/nn_piso_plan.md) | The six-stage CNN coupling plan, with test problems, acceptance criteria, and the two criteria the measurements overturned |
+| [`second_order_convective.md`](piso_port/reference/second_order_convective.md) | **What actually has to be true to keep second order once convection is active** — the two O(dt) errors that sit in front of BDF2, why `central` is mandatory, and the five ways a convergence-order measurement can lie to you (each of which produced a wrong published conclusion here first) |
 | [`stokes_verification.md`](piso_port/reference/stokes_verification.md) | Both Stokes eigenvalue problems in full — setup, methodology, the 5x5 error matrix, the opposite-sign error finding, and the defects the tests exposed (including four in the tests themselves) |
 | [`outflow_bcs.md`](piso_port/reference/outflow_bcs.md) | Inflow/outflow: what PICT actually does (and the cell-centred factor of 2 that does not transfer to a node-on-boundary grid), both treatments, results, and the diagnosis of the Dong defect — including the first hypothesis that turned out wrong |
 | [`multiblock_offsets.md`](piso_port/reference/multiblock_offsets.md) | How PICT joins blocks: the global index space, CSR offsets, and the axis-permutation connection map — with diagrams. PICT uses **no ghost cells**; coupling is implicit in one global matrix |
