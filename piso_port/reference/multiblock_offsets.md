@@ -693,6 +693,31 @@ Node placement follows the connection rule: the azimuthal direction closes on it
 partitioned **without** duplicating the seam nodes, like a periodic axis; the radial direction has
 real boundaries at both ends and keeps both endpoints.
 
+### Before the adjoint: the finite-difference gate
+
+`test_multiblock_gradient.py` was written **before** any multi-block adjoint, deliberately. It is
+the reference the adjoint will have to match, and it answers the two questions that decide
+whether building one is sensible at all.
+
+**Is the forward solver smooth enough to differentiate?** Every step contains iterative solves
+truncated at a tolerance; if that noise exceeds the finite-difference signal, the gradient is
+meaningless and an adjoint inherits the problem. Measured $\mathrm{d}L/\mathrm{d}G$:
+
+| $h$ | 1e-2 | 1e-3 | 1e-4 | 1e-5 | 1e-6 |
+|---|---|---|---|---|---|
+| $\mathrm{d}L/\mathrm{d}G$ | 21.3693187229 | 21.3693187229 | 21.3693187229 | 21.3693187227 | 21.3693187234 |
+
+A clean plateau, relative spread **8.3e-12**. Yes.
+
+**Is the gradient block-count-independent?** Split-equals-whole applied to
+$\mathrm{d}L/\mathrm{d}\theta$ rather than to the solution — **0.00e+00** across 1, 2 and 4
+blocks, with the loss itself agreeing to 1.7e-15.
+
+That second check is the one worth having. A connection face coefficient is
+$\tfrac12(Jg_A + Jg_B)$, so $\partial L/\partial A$ there must scatter back to **both** blocks.
+Accumulate into only one and the gradient is silently **halved**: the loss still decreases,
+training still appears to work, and nothing complains. This gate is the only place that shows up.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
