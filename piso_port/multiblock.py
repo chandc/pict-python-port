@@ -228,7 +228,7 @@ class Domain:
                 return c.ba, c.fa, c.unalign, -c.shift
         return None
 
-    def _ghost_layers(self, b, fid, width, src=None):
+    def _ghost_layers(self, b, fid, width, src=None, shift=True):
         """
         `width` coordinate layers just beyond face `fid` of block b, in b's own index ordering
         and physical frame. Returns a list of 3 arrays shaped like b's face with a leading
@@ -252,14 +252,14 @@ class Domain:
                 lay = lay if side == 1 else lay[::-1]          # nearest-first
                 # one-period shift: moving one period along axis `axis` displaces the physical
                 # point by period[axis] in physical component `axis`, and nothing else
-                jump = blk.period[axis] if comp == axis else 0.0
+                jump = (blk.period[axis] if comp == axis else 0.0) if shift else 0.0
                 out.append(lay + (jump if side == 1 else -jump))
             return out
 
         nb = self._neighbour_of(b, fid)
         if nb is None:
             return None
-        ob, ofid, to_mine, shift = nb
+        ob, ofid, to_mine, sh = nb
         other = self.blocks[ob]
         oaxis, oside = face_axis_side(ofid)
         out = []
@@ -270,7 +270,7 @@ class Domain:
             if oside == 1:
                 lay = lay[::-1]                                # nearest-first
             lay = np.stack([to_mine(l) for l in lay])          # into my face ordering
-            out.append(lay + shift[comp])
+            out.append(lay + (sh[comp] if shift else 0.0))
         return out
 
     def pad_coords(self, b, width=2):
@@ -409,3 +409,77 @@ class Domain:
         return sparse.coo_matrix((np.concatenate(vals),
                                   (np.concatenate(rows), np.concatenate(cols))),
                                  shape=(N, N)).tocsr()
+
+    def pad_field(self, b, f, width=2):
+        """
+        Ghost-pad a SCALAR FIELD of block b across its periodic/connected faces.
+
+        Same machinery as pad_coords with ONE critical difference: NO PERIOD SHIFT. Coordinates
+        ramp and jump back, so a wrapped coordinate ghost must be displaced by one period.
+        Velocity and pressure are genuinely periodic and must NOT be. Copying the coordinate
+        path verbatim would offset every seam by exactly one period -- a large, smooth, entirely
+        plausible-looking error.
+
+        `width` must cover the widest stencil that will be applied. Central differencing needs
+        1; SOU reaches i-2 and needs 2. Padding with 1 and then applying SOU silently degrades
+        the upwind stencil to first order AT SEAMS ONLY, which no smooth test would reveal.
+
+        Returns (padded, lo, hi) so the caller can strip the ghosts afterwards.
+        """
+        blk = self.blocks[b]
+        cur = np.asarray(f)
+        if cur.shape != blk.shape:
+            raise ValueError(f"field shape {cur.shape} does not match block {b} {blk.shape}")
+        lo, hi = [0, 0, 0], [0, 0, 0]
+        conn_axes = [a for a in range(3)
+                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1))]
+        for axis in conn_axes + [a for a in range(3) if a not in conn_axes]:
+            g = {}
+            for side in (0, 1):
+                lay = self._ghost_layers_field(b, face_id(axis, side), width, cur)
+                g[side] = lay
+            if g[0] is None and g[1] is None:
+                continue
+            parts = []
+            if g[0] is not None:
+                parts.append(np.moveaxis(g[0][::-1], 0, axis))
+            parts.append(cur)
+            if g[1] is not None:
+                parts.append(np.moveaxis(g[1], 0, axis))
+            cur = np.concatenate(parts, axis=axis)
+            if g[0] is not None:
+                lo[axis] = width
+            if g[1] is not None:
+                hi[axis] = width
+        return cur, lo, hi
+
+    def _ghost_layers_field(self, b, fid, width, cur):
+        """Layers of a scalar field beyond face `fid`, in b's ordering. No period shift."""
+        blk = self.blocks[b]
+        axis, side = face_axis_side(fid)
+        kind = blk.faces[fid]
+        if kind == "periodic":
+            sl = [slice(None)] * 3
+            sl[axis] = slice(0, width) if side == 1 else slice(-width, None)
+            lay = np.moveaxis(cur[tuple(sl)], axis, 0)
+            return lay if side == 1 else lay[::-1]
+        nb = self._neighbour_of(b, fid)
+        if nb is None:
+            return None
+        ob, ofid, to_mine, _ = nb
+        oaxis, oside = face_axis_side(ofid)
+        other = self._field_cache.get(ob) if hasattr(self, "_field_cache") else None
+        if other is None:
+            raise RuntimeError(
+                "pad_field needs the neighbour's field. Call Domain.set_fields({b: array}) "
+                "for every block first, so a connected face can read across the seam.")
+        sl = [slice(None)] * 3
+        sl[oaxis] = slice(0, width) if oside == 0 else slice(-width, None)
+        lay = np.moveaxis(other[tuple(sl)], oaxis, 0)
+        if oside == 1:
+            lay = lay[::-1]
+        return np.stack([to_mine(l) for l in lay])
+
+    def set_fields(self, fields):
+        """Register the per-block arrays that pad_field will read across connections."""
+        self._field_cache = dict(fields)

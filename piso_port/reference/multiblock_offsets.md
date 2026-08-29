@@ -384,6 +384,26 @@ and `validate()` could not see it, because the interface nodes are genuinely dis
 duplicated-node check has nothing to catch. It is gated by the MMS test instead. Worth noting as
 a class: some seam errors are invisible to structural checks and only a *solve* reveals them.
 
+### Field padding, and the decision to use IMPLICIT cross terms
+
+`Domain.pad_field` ghost-pads a scalar field across seams using the same connection machinery as
+`pad_coords`, with one critical difference: **no period shift**. Coordinates ramp and jump back,
+so a wrapped coordinate ghost must be displaced by one period; velocity and pressure are
+genuinely periodic and must not be. Copying the coordinate path verbatim would offset every seam
+by exactly one period — large, smooth and entirely plausible-looking. Verified exact (0.00e+00)
+against the single-block field, and the trap is gated.
+
+`width` must cover the widest stencil to be applied: central needs 1, **SOU reaches $i-2$ and
+needs 2**. Padding with 1 and then applying SOU degrades the upwind stencil to first order *at
+seams only*, which no smooth test would reveal.
+
+**Cross terms will be treated IMPLICITLY in multi-block, not by deferred correction.** The
+deferred path would need cross-term fluxes exchanged across every seam on every Picard sweep —
+the fiddliest piece of the whole build. The implicit path instead applies the cross operator
+per-block on padded fields using the already-verified `pressure_face_fluxes`, with the global
+7-point matrix (assembled exactly, above) as the preconditioner. That reuses verified code
+rather than requiring a new seam-aware 19-point assembler.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

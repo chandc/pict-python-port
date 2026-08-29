@@ -318,6 +318,46 @@ if __name__ == "__main__":
           f"without the shift {bad_e:.3e} vs {good_e:.3e} -- {bad_e/good_e:.1f}x worse, and "
           f"validate() cannot see it (the nodes are genuinely distinct)")
 
+    print("\n9. FIELD padding across seams (the input the operators will need)")
+    # Fields are padded with the same connection machinery as coordinates but WITHOUT the
+    # period shift: coordinates ramp and jump back, velocity and pressure are genuinely
+    # periodic. Getting that backwards offsets every seam by exactly one period -- large,
+    # smooth, and entirely plausible-looking.
+    fld = (np.sin(2 * np.pi * xs) * np.cos(2 * np.pi * ys) * np.sin(2 * np.pi * zs))
+    for n_split in (2, 4):
+        dd = warped_split(n_split)
+        nxb = NTOT // n_split
+        parts = {b: fld[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        dd.set_fields(parts)
+        err = 0.0
+        for b in range(n_split):
+            pf, lo, hi = dd.pad_field(b, parts[b], width=2)
+            core = (slice(lo[0], pf.shape[0] - hi[0]),
+                    slice(lo[1], pf.shape[1] - hi[1]),
+                    slice(lo[2], pf.shape[2] - hi[2]))
+            err = max(err, np.abs(pf[core] - parts[b]).max())
+            for k in (1, 2):                      # streamwise ghosts either side
+                gh = pf[lo[0] + nxb + k - 1][core[1], core[2]]
+                want = np.roll(fld, -(b * nxb + nxb + k - 1), axis=0)[0]
+                err = max(err, np.abs(gh - want).max())
+                gl = pf[lo[0] - k][core[1], core[2]]
+                wantl = np.roll(fld, -(b * nxb - k), axis=0)[0]
+                err = max(err, np.abs(gl - wantl).max())
+        check(f"{n_split}-block field padding matches the single-block field",
+              err < 1e-14, f"max |ghost - single-block value| = {err:.2e} (width=2, both sides)")
+
+    # The trap, demonstrated: applying the COORDINATE period shift to a field.
+    dd = warped_split(2)
+    parts = {b: fld[b * (NTOT // 2):(b + 1) * (NTOT // 2)] for b in range(2)}
+    dd.set_fields(parts)
+    good, lo, hi = dd.pad_field(0, parts[0], width=2)
+    bad = good.copy()
+    bad[lo[0] + NTOT // 2:] += 1.0                # what a period shift would inject
+    check("a period shift on a FIELD would be a large error, not a subtle one",
+          np.abs(bad - good).max() > 0.5,
+          f"it displaces the seam ghosts by {np.abs(bad - good).max():.1f} = one period; "
+          f"fields must be padded WITHOUT the shift that coordinates require")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)
