@@ -182,6 +182,44 @@ Order of accuracy, against the exact duct Fourier series:
 
 On an orthogonal grid the term is **bitwise inert**, which is the O(h^3) claim made good.
 
+## Multi-block
+
+The same three options exist on `MultiBlockPISO`. Two things had to hold and both do:
+
+* **Block-count independence survives.** With the full fix on, 2 blocks vs 1 agree to
+  2.07e-10 and 4 blocks vs 1 to 3.78e-10 -- the same order as the existing 55-check suite.
+* **Seam fluxes need no ownership rule.** Both sides of a connection already compute bitwise
+  identical face fluxes AND bitwise identical pressure corrections (0.00e+00, with and without
+  cross terms), and periodic wrap faces are single-valued. The plan had assumed persistence
+  would let the two copies drift and that an A-side owner would be needed; measurement says
+  otherwise. That assumption came from `build_diffusion_matrix`, where double-adding a
+  connection genuinely does halve the diffusion -- but fluxes are not summed that way, so the
+  hazard does not transfer.
+
+On the forced periodic strip -- whose exact pressure is uniform, so all pressure variation is
+spurious -- the improvement is much larger than on the duct:
+
+| blocks | baseline | persistent | persistent + RC | divF |
+|---|---|---|---|---|
+| 1 | 1.26e-02 | 1.33e-05 | **1.43e-11** | 1.5e-13 -> 2.7e-15 |
+| 2 | 9.50e-03 | 3.36e-05 | **1.34e-12** | 1.1e-13 -> 3.1e-15 |
+| 4 | 3.04e-03 | 1.92e-07 | **8.46e-12** | 3.6e-14 -> 2.7e-15 |
+
+Note that `persistent_flux` alone does most of the work here (1e-2 -> 1e-5) while on the warped
+duct it did nothing measurable. The strip is Cartesian, so there are no cross terms; different
+mechanisms dominate in the two cases, and neither case alone characterises the fix.
+
+dt sweep across blocks makes the `Gamma ~ dt` argument starker than the single-block duct did:
+
+| blocks | dt | RC only | RC + ddt_corr |
+|---|---|---|---|
+| 2 | 0.0200 | 6.41e-13 | 1.66e-13 |
+| 2 | 0.0050 | **5.68e-10** | **8.18e-13** |
+| 4 | 0.0200 | 4.90e-13 | 2.24e-13 |
+| 4 | 0.0050 | **1.15e-09** | **7.31e-13** |
+
+A 4x refinement in dt makes plain Rhie-Chow ~900x worse; with the transient term it holds flat.
+
 ## What this does NOT fix, and what to watch for
 
 * **The plan's central hypothesis was wrong.** Making the flux persistent was argued to be what

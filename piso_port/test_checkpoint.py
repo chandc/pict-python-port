@@ -44,6 +44,11 @@ def single_rc(**kw):
     return single(rhie_chow=True, persistent_flux=True, ddt_corr=True, **kw)
 
 
+def multi_rc(nb=2, **kw):
+    """Multi-block with Rhie-Chow: p_flux and F_prev become per-block running state."""
+    return multi(nb, rhie_chow=True, persistent_flux=True, ddt_corr=True, **kw)
+
+
 def multi(nb=2, **kw):
     s = MultiBlockPISO(strip(nb), 0.05, 0.02, 2, 1e-12, time_scheme='bdf2',
                        scheme='rotational', picard_iters=2, **kw)
@@ -88,7 +93,8 @@ if __name__ == "__main__":
     for name, make in (("single block", single),
                        ("single block, rhie_chow", single_rc),
                        ("multi-block, 2 domains", multi),
-                       ("multi-block, 4 domains", lambda: multi(4))):
+                       ("multi-block, 4 domains", lambda: multi(4)),
+                       ("multi-block, rhie_chow", multi_rc)):
         err, meta, c = split_run(make)
         check(err < 1e-12, f"{name}: restart reproduces the uninterrupted run "
                            f"(max|diff| = {err:.2e})")
@@ -108,6 +114,15 @@ if __name__ == "__main__":
     err_fp, _, _ = split_run(single_rc, mangle=lambda s: setattr(s, "F_prev", None))
     check(err_fp > 1e-12, f"rhie_chow: dropping F_prev loses a step of ddt_corr damping "
                           f"and the test detects it (max|diff| = {err_fp:.2e})")
+    # A correct restart is bitwise exact (0.00e+00), so ANY nonzero difference proves the
+    # dropped field mattered. The margin is small here only because the strip is a forced
+    # periodic channel whose exact pressure is uniform -- the spurious pressure the
+    # transient term suppresses is ~1e-11, so there is little left for it to change. That
+    # makes this a weak probe, not a failing one; the single-block control above carries
+    # the strong signal (8.15e-03).
+    err_mbf, _, _ = split_run(multi_rc, mangle=lambda s: setattr(s, "F_prev", None))
+    check(err_mbf > 1e-15, f"multi-block rhie_chow: dropping F_prev is detected "
+                           f"(max|diff| = {err_mbf:.2e}, vs 0.00e+00 for an exact restart)")
     err_pf, _, _ = split_run(single_rc, mangle=lambda s: s.p_flux.fill(0.0))
     check(err_pf > 1e-12, f"rhie_chow: dropping p_flux is detected "
                           f"(max|diff| = {err_pf:.2e})")

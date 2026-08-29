@@ -493,6 +493,37 @@ class Domain:
             F.append(f)
         return F
 
+
+    def face_interp(self, b, cells):
+        """A cell field on block b's face layout (shape[axis]+1), seams resolved from the
+        neighbour exactly as face_fluxes resolves them.
+
+        Used to weight the ddt_corr term by Gamma at the face, matching how
+        pressure_face_fluxes averages its own coefficient -- so the transient term is
+        weighted like the pressure term it exists to keep alive.
+        """
+        blk = self.blocks[b]
+        cp, lo, hi = self.pad_field(b, cells, 1)
+        out = []
+        for axis in range(3):
+            n = blk.shape[axis]
+            shape = list(blk.shape); shape[axis] += 1
+            f = np.zeros(shape)
+            core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
+            for k in range(n + 1):
+                a_lo, a_hi = lo[axis] + k - 1, lo[axis] + k
+                sl_out = [slice(None)] * 3; sl_out[axis] = k
+                if a_lo < 0 or a_hi >= cp.shape[axis]:
+                    idx = max(a_lo, 0) if a_lo < 0 else a_hi - 1
+                    s1 = list(core); s1[axis] = idx
+                    f[tuple(sl_out)] = cp[tuple(s1)]
+                    continue
+                s1 = list(core); s1[axis] = a_lo
+                s2 = list(core); s2[axis] = a_hi
+                f[tuple(sl_out)] = 0.5 * (cp[tuple(s1)] + cp[tuple(s2)])
+            out.append(f)
+        return out
+
     def divergence(self, b, F, J):
         """Flux divergence for block b -- identical form to divergence_from_fluxes."""
         blk = self.blocks[b]

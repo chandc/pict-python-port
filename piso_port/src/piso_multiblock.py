@@ -29,7 +29,7 @@ import scipy.sparse.linalg as spla
 class MultiBlockPISO:
     def __init__(self, domain, nu, dt, corrector_steps=2, tol=1e-13, time_scheme='bdf2',
                  scheme='rotational', picard_iters=2, implicit_cross=False,
-                 rhie_chow=False):
+                 rhie_chow=False, persistent_flux=False, ddt_corr=False):
         self.d = domain
         self.nu, self.dt = nu, dt
         # BDF2 by default, matching the single-block solver. The single-block Stokes study
@@ -56,6 +56,9 @@ class MultiBlockPISO:
         # is pure overhead.
         self.implicit_cross = implicit_cross
         self.rhie_chow = rhie_chow
+        self.persistent_flux = persistent_flux
+        self.ddt_corr = ddt_corr
+        self.F_prev = None          # previous step's face flux, for ddt_corr
         self.momentum_dc_iters = 2
         self.dong_delta = 0.01
         self._prec = None
@@ -69,6 +72,7 @@ class MultiBlockPISO:
         self.v = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
         self.w = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
         self.p = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
+        self.p_flux = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
         # Dirichlet velocity on wall faces. Default zero = no-slip; set per block to drive a lid
         # or an inlet. Walls are found from the face-type registry, so a block whose '+x' is a
         # wall and whose neighbour's '+x' is a connection is handled correctly.
@@ -260,22 +264,39 @@ class MultiBlockPISO:
         # solver print 1e-16 while the velocity field itself is not solenoidal on a collocated
         # grid.
         Fb = {}
+        built = False
         for _ in range(self.corrector_steps):
             divF = {}
             for b in range(nb):
-                Fb[b] = d.face_fluxes(b, us, vs, ws)
-                if self.rhie_chow:
-                    # Without this the momentum predictor's WIDE pressure gradient cannot feel
-                    # a node-to-node mode in p, and the face flux (a plain average of cell
-                    # velocities) cannot move mass in response to one -- so the mode is damped
-                    # by nothing and accumulates in the incremental/rotational schemes.
-                    # p + phi_tot, NOT self.p -- see the single-block note: reusing self.p
-                    # re-applies the term on every corrector pass and diverges.
-                    pcur = {bb: self.p[bb] + phi_tot[bb] for bb in range(nb)}
-                    rc = d.pressure_face_fluxes(b, pcur, coef[b], coef,
-                                                include_cross=False, rhie_chow=True)
-                    Fb[b] = [Fb[b][a] - rc[a] for a in range(3)]
+                # PERSISTENT FLUX: the corrector already writes a compact pressure correction
+                # into Fb below; rebuilding it here from the cell velocity throws that away,
+                # and the cell velocity was corrected with the WIDE gradient which annihilates
+                # the node-to-node mode. See reference/pressure_checkerboard.md.
+                if not (built and self.persistent_flux):
+                    Fb[b] = d.face_fluxes(b, us, vs, ws)
+                    if self.rhie_chow:
+                        # p_flux, NOT p: under 'rotational' p also carries -nu*div(u*), which
+                        # the flux never had. Feeding that back made the term remove flux that
+                        # was never added, and the loop diverged (|RC|/|F| 0.02 -> 1.36 -> 58,
+                        # NaN by step 83) while divF stayed at 1e-12 throughout.
+                        pcur = ({bb: self.p_flux[bb] for bb in range(nb)}
+                                if self.persistent_flux
+                                else {bb: self.p_flux[bb] + phi_tot[bb] for bb in range(nb)})
+                        rc = d.pressure_face_fluxes(b, pcur, coef[b], coef,
+                                                    include_cross=False, rhie_chow=True)
+                        Fb[b] = [Fb[b][a] - rc[a] for a in range(3)]
+                        if self.ddt_corr and self.F_prev is not None:
+                            # Gamma ~ dt, so the term above is O(dt) and its damping VANISHES
+                            # as dt -> 0. This re-injects the face/cell inconsistency the
+                            # previous step established, which is itself O(Gamma), making the
+                            # ratio -- and the damping -- dt-independent.
+                            Fold = d.face_fluxes(b, self.u, self.v, self.w)
+                            cf = d.face_interp(b, {bb: coef[bb] / self.dt
+                                                   for bb in range(nb)})
+                            Fb[b] = [Fb[b][a] + cf[a] * (self.F_prev[b][a] - Fold[a])
+                                     for a in range(3)]
                 divF[b] = d.divergence(b, Fb[b], self.Js[b])
+            built = True
             if div_star is None:
                 div_star = {b: divF[b].copy() for b in range(nb)}   # predictor divergence
             rhs = -(Jg * self._flat(divF))
@@ -317,6 +338,11 @@ class MultiBlockPISO:
                 Fb[b] = [Fb[b][a] - Phi[a] for a in range(3)]
                 phi_tot[b] = phi_tot[b] + pp[b]
 
+        # the projection pressure -- what the face flux actually carries. Equal to self.p
+        # except under 'rotational', which adds a term the flux never saw.
+        self.p_flux = (dict(phi_tot) if self.scheme == 'chorin'
+                       else {b: self.p_flux[b] + phi_tot[b] for b in range(nb)})
+
         if self.scheme == 'chorin':
             self.p = phi_tot                              # recomputed, never accumulated
         elif self.scheme == 'incremental':
@@ -327,6 +353,7 @@ class MultiBlockPISO:
             self.p = {b: self.p[b] + phi_tot[b] - self.nu * div_star[b] for b in range(nb)}
         else:
             raise ValueError(f"unknown scheme {self.scheme!r}")
+        self.F_prev = {b: [f.copy() for f in Fb[b]] for b in range(nb)}
         # diagnostic stash: lets a caller see which term carries a checkerboard mode
         self._diag = {"phi": phi_tot, "div_star": div_star}
         self.u_prev = (dict(self.u), dict(self.v), dict(self.w))
