@@ -424,6 +424,20 @@ would read whichever component had been registered last across every seam — a 
 corruption. The field for every block is now passed explicitly and passing a bare array raises
 rather than guessing.
 
+### Global momentum matrix: landed and exact
+
+`Domain.build_momentum_matrix` assembles $A = J/\Delta t + J\,\mathrm{conv} + \nu\,\mathrm{diff}$
+across blocks as one matrix, matching the single-block assembler to **1.42e-14** with identical
+nnz for 2- and 4-way splits. Unlike diffusion, convection is **not symmetric** (measured
+asymmetry 7.55), so each face writes *different* values into the two rows it touches.
+
+**Central convection only, and it raises rather than falling back.** SOU reaches $i-2$, so it
+needs two ghost layers at a seam and a wider assembly than the verified 7-point machinery. A
+silent fallback to central would change the physics, not merely the accuracy — SOU removes ~10%
+of kinetic energy per turnover on a broadband field where central conserves it to round-off — so
+`convection='sou'` raises `NotImplementedError`. That is also the right default for this work:
+central is the scheme required for anything where dissipation matters.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

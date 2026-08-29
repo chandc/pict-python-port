@@ -550,3 +550,106 @@ class Domain:
             hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
             d += (F[axis][tuple(hi_s)] - F[axis][tuple(lo_s)]) / blk.h[axis]
         return d / J
+
+    def build_momentum_matrix(self, Js, metrics_list, us, vs, ws, nu, dt, bdf2=False,
+                              convection='central'):
+        """
+        Global momentum operator  A = J/dt (or 3J/2dt) + J*convection + nu*diffusion, assembled
+        across blocks as one matrix.
+
+        CENTRAL convection only. That is a deliberate scope choice, not an oversight: central is
+        the scheme required for anything where dissipation matters -- test_energy_conservation.py
+        shows its convective operator conserves kinetic energy to round-off while SOU removes
+        ~10% per turnover on a broadband field -- and its 7-point stencil matches the connection
+        machinery already verified here. SOU reaches i-2, so it needs two ghost layers at a seam
+        and a wider assembly; that is a separate increment, and build_momentum_matrix raises
+        rather than silently degrading the upwind stencil at seams.
+
+        The convection term is NOT symmetric, unlike diffusion, so each face writes DIFFERENT
+        values into the two rows it touches.
+        """
+        if convection != 'central':
+            raise NotImplementedError(
+                f"multi-block momentum supports convection='central' only, not {convection!r}. "
+                f"SOU reaches i-2, so it needs two ghost layers at a seam and a wider assembly "
+                f"than the 7-point connection machinery verified here. Falling back to central "
+                f"silently would change the physics -- SOU removes ~10% of kinetic energy per "
+                f"turnover on a broadband field where central conserves it to round-off -- so "
+                f"this raises instead.")
+        N = self.n_cells
+        rows, cols, vals = [], [], []
+        diag = [np.zeros(b.shape) for b in self.blocks]
+
+        # contravariant convecting velocity, per block, on PADDED arrays so a seam face sees the
+        # neighbour's velocity rather than a one-sided guess
+        from phase5_fluxes import contravariant_components
+        UVW = {}
+        for b, blk in enumerate(self.blocks):
+            up = self.pad_field(b, us, 1)[0]
+            vp = self.pad_field(b, vs, 1)[0]
+            wp = self.pad_field(b, ws, 1)[0]
+            Jp, mp, lo, hi = self.padded_geometry(b, 1)
+            UVW[b] = (contravariant_components(up, vp, wp, Jp, mp), lo, hi)
+
+        def conv_coef(b, axis):
+            """J-weighted contravariant component on this block's own cells."""
+            (JU, lo, hi) = UVW[b]
+            core = tuple(slice(lo[a], lo[a] + self.blocks[b].shape[a]) for a in range(3))
+            return JU[axis][core]
+
+        def Jg_of(b, axis):
+            m = metrics_list[b]
+            key = ("xi", "eta", "zeta")[axis]
+            g = m[f"{key}_x"] ** 2 + m[f"{key}_y"] ** 2 + m[f"{key}_z"] ** 2
+            return nu * Js[b] * g
+
+        def add_face(gP, gN, cf_diff, aP, aN, hh):
+            """One face: symmetric diffusion, antisymmetric central convection."""
+            rows.append(gP); cols.append(gN); vals.append(-cf_diff + aP / (2 * hh))
+            rows.append(gN); cols.append(gP); vals.append(-cf_diff - aN / (2 * hh))
+
+        for b, blk in enumerate(self.blocks):
+            gid = self.global_ids(b)
+            for axis in range(3):
+                h = blk.h[axis]
+                Jg = Jg_of(b, axis)
+                a_c = conv_coef(b, axis)
+                lo_s = [slice(None)] * 3; lo_s[axis] = slice(0, -1)
+                hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
+                cf = 0.5 * (Jg[tuple(lo_s)] + Jg[tuple(hi_s)]) / h ** 2
+                add_face(gid[tuple(lo_s)].ravel(), gid[tuple(hi_s)].ravel(), cf.ravel(),
+                         a_c[tuple(lo_s)].ravel(), a_c[tuple(hi_s)].ravel(), h)
+                diag[b][tuple(lo_s)] += cf
+                diag[b][tuple(hi_s)] += cf
+                if blk.faces[face_id(axis, 1)] == "periodic":
+                    f0 = [slice(None)] * 3; f0[axis] = 0
+                    fn = [slice(None)] * 3; fn[axis] = -1
+                    cw = 0.5 * (Jg[tuple(fn)] + Jg[tuple(f0)]) / h ** 2
+                    add_face(gid[tuple(fn)].ravel(), gid[tuple(f0)].ravel(), cw.ravel(),
+                             a_c[tuple(fn)].ravel(), a_c[tuple(f0)].ravel(), h)
+                    diag[b][tuple(fn)] += cw
+                    diag[b][tuple(f0)] += cw
+
+        for c in self.connections:
+            axis, _ = face_axis_side(c.fa)
+            oaxis, _ = face_axis_side(c.fb)
+            h = self.blocks[c.ba].h[axis]
+            JgA = Jg_of(c.ba, axis)[face_slice(c.fa)]
+            JgB = c.align(Jg_of(c.bb, oaxis)[face_slice(c.fb)])
+            cf = 0.5 * (JgA + JgB) / h ** 2
+            aA = conv_coef(c.ba, axis)[face_slice(c.fa)]
+            aB = c.align(conv_coef(c.bb, oaxis)[face_slice(c.fb)])
+            ga, gb = self.pair_indices(c)
+            add_face(ga, gb, cf.ravel(), aA.ravel(), aB.ravel(), h)
+            diag[c.ba][face_slice(c.fa)] += cf
+            diag[c.bb][face_slice(c.fb)] += c.unalign(cf)
+
+        c0 = 1.5 / dt if bdf2 else 1.0 / dt
+        for b in range(len(self.blocks)):
+            rows.append(self.global_ids(b).ravel())
+            cols.append(self.global_ids(b).ravel())
+            vals.append((diag[b] + Js[b] * c0).ravel())
+
+        return sparse.coo_matrix((np.concatenate(vals),
+                                  (np.concatenate(rows), np.concatenate(cols))),
+                                 shape=(N, N)).tocsr()

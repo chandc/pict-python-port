@@ -390,6 +390,47 @@ if __name__ == "__main__":
               de < 1e-13, f"max |div - single| = {de:.2e} (single-block max|div| itself is "
                           f"{np.abs(dref).max():.2e}, coarse-grid truncation at n={NTOT})")
 
+    print("\n11. GLOBAL MOMENTUM MATRIX (convection + diffusion + transient)")
+    import scipy.sparse as sp2
+    from phase3_momentum import build_momentum_matrix_7point
+    NUm, DTm = 0.05, 0.02
+    Aref = build_momentum_matrix_7point(NTOT, NY, NZ, Jref, mref, hx, hy, hz, uu, vv, ww,
+                                        NUm, periodic=P3, convection="central")
+    Aref = Aref + sp2.diags(Jref.ravel() / DTm)
+    for n_split in (2, 4):
+        dd = warped_split(n_split)
+        nxb = NTOT // n_split
+        us = {b: uu[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        vs = {b: vv[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        ws = {b: ww[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        Js2, ms2 = [], []
+        for b in range(n_split):
+            Jb, mb = dd.block_metrics(b); Js2.append(Jb); ms2.append(mb)
+        A = dd.build_momentum_matrix(Js2, ms2, us, vs, ws, NUm, DTm)
+        check(f"{n_split}-block momentum matrix equals the single-block matrix",
+              abs(A - Aref).max() < 1e-12 and A.nnz == Aref.nnz,
+              f"max|A - Aref| = {abs(A - Aref).max():.2e}, {A.nnz} nnz vs {Aref.nnz} "
+              f"(convection is NOT symmetric: asymmetry {abs(A - A.T).max():.2e})")
+
+    # SOU must refuse rather than quietly give central
+    dd = warped_split(2)
+    Js2, ms2 = [], []
+    for b in range(2):
+        Jb, mb = dd.block_metrics(b); Js2.append(Jb); ms2.append(mb)
+    nxb = NTOT // 2
+    try:
+        dd.build_momentum_matrix(Js2, ms2,
+                                 {b: uu[b*nxb:(b+1)*nxb] for b in range(2)},
+                                 {b: vv[b*nxb:(b+1)*nxb] for b in range(2)},
+                                 {b: ww[b*nxb:(b+1)*nxb] for b in range(2)},
+                                 NUm, DTm, convection="sou")
+        refused = False
+    except NotImplementedError:
+        refused = True
+    check("asking for SOU raises rather than silently giving central", refused,
+          "SOU reaches i-2 and needs wider seam handling; a silent fallback would change the "
+          "physics, since SOU removes ~10% of KE per turnover where central conserves it")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)
