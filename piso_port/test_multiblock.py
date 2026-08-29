@@ -715,6 +715,64 @@ if __name__ == "__main__":
               f"max|u - u_single| = {np.abs(ue - sw.u).max():.2e} at warp {Ww}; "
               f"flux divergence {dwm:.1e} (single block {dws:.1e})")
 
+    print("\n17. WARPED + WALLS + SEAMS together (what a body-fitted mesh needs)")
+    # Every warped test above is fully periodic and the wall test is Cartesian. A body-fitted
+    # mesh around an obstacle is all three at once, so the combination gets its own gate rather
+    # than being inferred from the parts.
+    #
+    # The warp is WALL-PRESERVING: the y-displacement carries sin(pi*eta), which vanishes at
+    # both walls, so the channel stays flat-walled while dy/dxi != 0 keeps it genuinely
+    # non-orthogonal. A warp that MOVED the walls would change the geometry rather than the
+    # mesh, which is the trap test_duct_implicit.py documents.
+    from phase1_grid_metrics import compute_numerical_metrics as _cnm
+    NXk, NYk, NZk, NUk, DTk, Gk = 8, 9, 4, 0.1, 0.05, 0.8
+
+    def wall_grid(A):
+        xi1 = np.arange(NXk) / NXk
+        eta1 = np.linspace(0, 1, NYk)
+        ze1 = np.arange(NZk) / NZk
+        XI, ETA, ZE = np.meshgrid(xi1, eta1, ze1, indexing="ij")
+        return (XI, ETA + A * np.sin(np.pi * ETA) * np.sin(2 * np.pi * XI), ZE,
+                1.0 / NXk, 1.0 / (NYk - 1), 1.0 / NZk)
+
+    for A in (0.06, 0.10):
+        xk, yk, zk, hxk, hyk, hzk = wall_grid(A)
+        wall_moved = max(np.abs(yk[:, 0, :]).max(), np.abs(yk[:, -1, :] - 1).max())
+        sk = PISOSolver((NXk, NYk, NZk), warp=1e-9, nu=NUk, dt=DTk, corrector_steps=2,
+                        periodic=(True, False, True), scheme="rotational", time_scheme="bdf2",
+                        convection="central", boundary_flux_mode="impermeable",
+                        pressure_coef="rowsum", pressure_tol=1e-13, picard_iters=2,
+                        implicit_cross=True, momentum_dc_iters=2)
+        sk.x, sk.y, sk.z = xk, yk, zk
+        sk.h = (hxk, hyk, hzk)
+        sk.J, sk.metrics = _cnm(xk, yk, zk, hxk, hyk, hzk, periodic=sk.per)
+        sk.velocity_source = [np.full_like(sk.y, Gk), np.zeros_like(sk.y), np.zeros_like(sk.y)]
+        with _cl.redirect_stdout(_io.StringIO()):
+            for _ in range(15):
+                sk.step()
+        for n_split in (2, 4):
+            nxb = NXk // n_split
+            bl = []
+            for b in range(n_split):
+                sl = slice(b * nxb, (b + 1) * nxb)
+                blk = Block((nxb, NYk, NZk), xk[sl], yk[sl], zk[sl], (hxk, hyk, hzk))
+                blk.faces[face_id(1, 0)] = blk.faces[face_id(1, 1)] = "wall"
+                blk.faces[face_id(2, 0)] = blk.faces[face_id(2, 1)] = "periodic"
+                bl.append(blk)
+            dk = Domain(bl, [Connection(b, face_id(0, 1), (b + 1) % n_split, face_id(0, 0),
+                                        shift=(1.0, 0, 0) if (b + 1) % n_split == 0 else (0, 0, 0))
+                             for b in range(n_split)])
+            m = MultiBlockPISO(dk, NUk, DTk, 2, 1e-13, time_scheme="bdf2", scheme="rotational",
+                               picard_iters=2, implicit_cross=True)
+            m.velocity_source = [Gk, 0.0, 0.0]
+            for _ in range(15):
+                dmk = m.step()
+            ue = np.concatenate([m.u[b] for b in range(n_split)], axis=0)
+            check(f"warp {A:.2f} + walls + {n_split} blocks matches single-block",
+                  np.abs(ue - sk.u).max() < 1e-8 and dmk < 1e-11 and wall_moved < 1e-14,
+                  f"max|u - u_single| = {np.abs(ue - sk.u).max():.2e}, divergence {dmk:.1e}, "
+                  f"walls stayed flat to {wall_moved:.1e}")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

@@ -578,6 +578,32 @@ Two cross operators were needed, not one, and finding that took two rounds of de
    5.5e-02, because the **momentum** cross-diffusion was missing entirely. A divergence-free but
    incorrect velocity is exactly the failure mode a flux-divergence diagnostic cannot see.
 
+### Coverage: does a skew grid work in both single and multi domain?
+
+Yes, and this is measured rather than inferred from the parts. Multi-block reproduces the
+single-block trajectory across warps, topologies, wall types and the production scheme
+(rotational + BDF2 + Picard 2 + implicit cross):
+
+| case | warp | vs single block | flux divergence |
+|---|---|---|---|
+| strip, 4 blocks | 0.08 / 0.12 / 0.15 | 4.9e-11 / 1.6e-10 / **2.4e-10** | ≤7.5e-13 |
+| 2×2 topology (two connected axes) | 0.08 / 0.12 | 4.9e-11 / 1.6e-10 | ≤1.0e-12 |
+| **warped + WALLS + seams** | 0.06 / 0.10 | 8.9e-11 / **6.4e-11** | ≤8.7e-16 |
+
+The 2×2 numbers are *identical* to the strip at the same warp: the decomposition genuinely does
+not affect the answer.
+
+Three things worth carrying:
+
+- **The warp ceiling is the grid, not the method.** `make_grid`'s family tangles at 0.18
+  (min $J$ < 0), so 0.15 is near its limit. A wall-preserving warp stays valid past 0.20.
+- **Error grows with warp as it should** — 4.9e-11 → 2.4e-10 from 0.08 to 0.15 — tracking the
+  cross-term contraction ratios (0.31 / 0.59 / 0.92) measured single-block, not a seam defect.
+- **The wall test uses a wall-PRESERVING warp**: the $y$-displacement carries $\sin\pi\eta$,
+  zero at both walls, so the channel stays flat-walled while $\partial y/\partial\xi \neq 0$
+  keeps it non-orthogonal. A warp that moved the walls would change the geometry rather than the
+  mesh — the trap `test_duct_implicit.py` documents.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
