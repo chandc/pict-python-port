@@ -178,6 +178,21 @@ PISOSolver(...,
 
 **What this does not fix.** These settings deliver the design order; they do not make the scheme
 non-dissipative. The Orr-Sommerfeld test measures the residual numerical damping directly:
-1.09e-3, 6.4e-4, 2.5e-4 per unit time at $n_y = 97, 129, 201$ — converging, but comparable to a
-growth rate of 2.2e-3 until the grid is fine. Second order is a statement about the *rate* at
-which error vanishes, not about whether it is small at the resolution you can afford.
+
+| $n_y$ | 97 | 129 | 201 | 401 |
+|---|---|---|---|---|
+| growth rate | 0.001141 | 0.001595 | 0.001983 | **0.002209** |
+| error vs 0.002235 | 49.0% | 28.6% | 11.3% | **1.2%** |
+
+Converging, but comparable to the 2.2e-3 growth rate itself until the grid is fine. Second order
+is a statement about the *rate* at which error vanishes, not about whether it is small at the
+resolution you can afford.
+
+That study also shows the two error sources splitting cleanly **by variable**: the growth rate is
+spatial-limited (201→401 gained 9.4×, halving $\Delta t$ gained nothing) while the phase speed is
+temporal-limited (flat at 1.4–1.5% across $n_y$ = 97→401, moving only with $\Delta t$: 2.59% /
+1.50% / 0.94%). And it shows the opposite-sign trap in the wild — the sign of the
+$\Delta t$-sensitivity **flips** between $n_y$=201 (refining $\Delta t$ makes it worse) and
+$n_y$=401 (refining makes it better), which is two errors of opposite sign crossing between the
+two grids. The implied order 201→401 is 3.28, above the design order, so partial cancellation is
+still flattering the finest point.

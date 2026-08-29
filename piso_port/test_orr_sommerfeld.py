@@ -26,6 +26,37 @@ needed and base-flow drift cannot contaminate the answer. The complex amplitude
     a(t) = <A(t), A(0)> / <A(0), A(0)>,     A = first streamwise Fourier mode of u'
 
 gives the growth rate as d ln|a|/dt and the phase speed as -d arg(a)/dt / alpha.
+
+RESOLUTION STUDY. Runs beyond ny=201 are NOT in the default suite -- 48x401 takes ~80 minutes --
+so the numbers are recorded here.
+
+    grid       dt      growth      err     phase      err
+    48x97      0.05    0.001141   49.0%   0.246358   1.4%
+    48x129     0.05    0.001595   28.6%   0.246243   1.5%
+    48x201     0.05    0.001983   11.3%   0.246169   1.5%
+    48x201     0.025   0.001956   12.5%   0.247535   0.94%
+    48x401     0.05    0.002209    1.2%   0.246138   1.50%
+    48x401     0.1     0.002195    1.8%   0.243419   2.59%
+    reference          0.002235           0.249892
+
+THE TWO ERROR SOURCES SPLIT CLEANLY BY VARIABLE. The GROWTH RATE is spatial-limited: refining
+ny 201->401 gained a factor 9.4 while halving dt at ny=201 gained nothing. The PHASE SPEED is
+temporal-limited: it sat at 1.4-1.5% across ny = 97->401 regardless of grid, and moved only with
+dt (2.59% / 1.50% / 0.94% at dt = 0.1 / 0.05 / 0.025). That is why the phase error looked
+stubbornly flat under grid refinement -- it was never the grid.
+
+WHAT IS NOT SETTLED. The implied convergence order from 201->401 is 3.28, and stays ~3.4 using
+the spatial-limited value at each grid. The scheme's design order is 2, so an implied 3.3 is NOT
+superconvergence: partial cancellation between the spatial error (over-damping) and the temporal
+error (under-damping) is still flattering the finest point. The sign of the dt-sensitivity FLIPS
+between the grids -- at ny=201 refining dt makes the answer WORSE (11.3% -> 12.5%), at ny=401 it
+makes it better (1.8% -> 1.2%) -- which is the signature of two errors of opposite sign crossing
+somewhere between them. Settling it needs ny=801, which is not affordable here.
+
+So the defensible claims are: the disturbance GROWS, which is the correct sign of stability and
+the substantive result; the growth rate converges monotonically toward Streett's value; and
+48x401 reaches 1.2% -- with that last error smaller than a purely second-order extrapolation
+would predict, for a reason that is understood but not eliminated.
 """
 import sys, io, contextlib, time, warnings
 import numpy as np
