@@ -604,6 +604,27 @@ Three things worth carrying:
   keeps it non-orthogonal. A warp that moved the walls would change the geometry rather than the
   mesh — the trap `test_duct_implicit.py` documents.
 
+### Inflow / outflow across blocks
+
+Outflow faces stay Dirichlet **velocity** boundaries, advected out each step, then rescaled so
+the **domain-wide** flux balances. Balancing block by block would force each block to be
+individually conservative, which is wrong: mass legitimately crosses a seam, and only the total
+has to vanish for the singular Neumann system to be compatible. Connected and periodic faces are
+skipped by `boundary_flux_totals` for that reason — they move mass *between* blocks, not out.
+
+Poiseuille with a prescribed inflow and a convective outlet, split along the flow direction:
+
+| split | L2/Umax vs exact parabola | vs single block |
+|---|---|---|
+| single | 1.604e-06 | — |
+| 2 blocks | **1.604e-06** | 6.0e-10 |
+| 4 blocks | **1.604e-06** | 6.0e-10 |
+
+**A node-placement trap worth naming.** With inflow/outflow the streamwise axis is *not*
+periodic, so the blocks must **partition** the nodes without duplicating the interface — 16 nodes
+into 4 blocks of 4, not 5. Splitting a `linspace` by reflex gives overlapping blocks, which
+`validate()` rejects; the first attempt did exactly that.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

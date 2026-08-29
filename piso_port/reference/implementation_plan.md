@@ -1,89 +1,160 @@
-# Educational Python PICT: Single-Domain 3D Curvilinear FVM PISO Port
+# Implementation plan — as originally written, and as actually followed
 
-**Goal:** Translate the complex C++/CUDA PICT solver into a pure Python/NumPy library for educational purposes, focusing on a single domain but fully preserving the complex physics of **3D Curvilinear (Non-Orthogonal) Grids**.
-
-**Workspace:** All work for this educational port will be isolated in a dedicated new directory: `/Users/danielchan/Dropbox/PICT/educational_python_port/`.
-
-**Execution Rule:** Always use `uv run <script.py>` to run any Python jobs for this project, instead of invoking the python interpreter directly.
+The original plan is preserved in §1–§2 because the gap between it and what happened is the most
+useful thing in this document. §3 records the route actually taken; §4 is the operational part —
+default settings and what to watch for to get second order on **non-linear** flows.
 
 ---
 
-## 1. Mathematical Formulation (3D Curvilinear Staggered Grid)
+## 1. The original plan (five phases, each gated by MMS)
 
-To solve equations on a warped/skewed 3D mesh, we map the physical coordinates $(x,y,z)$ to a perfectly uniform 3D computational space $(\xi, \eta, \zeta)$ where $\Delta \xi = \Delta \eta = \Delta \zeta = 1$.
+| Phase | Content | Gate |
+|---|---|---|
+| 1 | 3D mesh and metric generation | MMS on a wavy grid; GCL |
+| 2 | Gradient and divergence operators | MMS, trigo-exponential fields |
+| 3 | Momentum matrix assembly | MMS, 3D Taylor-Green |
+| 4 | Poisson matrix and solver | MMS, trigo-exponential Laplacian |
+| 5 | PISO orchestration and validation | lid-driven cavity vs Ghia |
 
-### Metric Tensors & Contravariant Velocity
-The mapping requires computing the massive 3D Jacobian $J$ (cell volume) and a full 3x3 matrix of metric derivatives (e.g., $\xi_x, \xi_y, \dots, \zeta_z$). 
-Instead of standard physical velocities $(u, v, w)$, fluid flow across the warped 3D cell faces is tracked using **Contravariant Velocities** $(U, V, W)$:
-$$ U = \xi_x u + \xi_y v + \xi_z w $$
-$$ V = \eta_x u + \eta_y v + \eta_z w $$
-$$ W = \zeta_x u + \zeta_y v + \zeta_z w $$
+Single domain, collocated, curvilinear. The plan was sound and all five phases were completed.
 
-### Transformed 3D Navier-Stokes Equations & Time Marching
-1.  **Continuity (Mass Conservation):** The divergence operator incorporates the 3D Jacobian.
-    $$ \frac{\partial}{\partial \xi}(J U) + \frac{\partial}{\partial \eta}(J V) + \frac{\partial}{\partial \zeta}(J W) = 0 $$
-2.  **Momentum Predictor (1st-Order Euler Implicit):** To match the core PICT C++ implementation (`SetupAdvectionMatrixEulerImplicit`), we will use the unconditionally stable **Backward Euler** time marching scheme. The transient, advection, and diffusion terms are evaluated implicitly at time $n+1$ and assembled into the sparse matrix $A$.
-    $$ A \mathbf{u}^* = \frac{\rho}{\Delta t} \mathbf{u}^n - \nabla_{\xi,\eta,\zeta} p^n $$
-3.  **Pressure Poisson Equation:** The Laplacian $M$ expands into a massive 27-point 3D stencil due to the cross-derivative terms introduced by 3D grid skewness.
-    $$ \nabla \cdot (A^{-1} \nabla p^{n+1}) = \nabla \cdot \mathbf{U}^* $$
-4.  **Velocity Corrector:** The pressure gradients are transformed back into physical 3D space to correct the velocity.
+## 2. What the plan got wrong about itself
+
+**It assumed MMS was sufficient.** Every phase gate is a manufactured solution or a steady
+comparison. Those verify that each operator approximates its differential counterpart, and they
+are blind to:
+
+- whether the convective operator **conserves kinetic energy** (§4.3) — nothing in the plan tests it
+- whether the scheme is second order **once convection is active** (§4.2) — every gate is
+  effectively linear
+- whether the *spectrum* of the linear operator is right (`stokes_verification.md`)
+
+**It assumed passing meant correct.** Phase 3 passed at grid warp 0.01 and collapsed to
+convergence rate **0.42** at warp 0.10 — the split between the implicit 7-point operator and the
+explicit cross terms was inconsistent, and a weak test hid it. The fix was the volume-integrated
+conservative form.
+
+**"Staggered" in the title was wrong.** The plan specified a staggered grid; reading PICT's C++
+showed it is **collocated**. Corrected in Phase 5.
+
+---
+
+## 3. The route actually followed
+
+Phases 1–5 as planned, then everything below, none of which was foreseen:
+
+| # | Work | Why it happened |
+|---|---|---|
+| 6 | Periodic BCs on all axes; rotational correction | needed before any spectral test |
+| 7 | Pressure coefficient fix (`rowsum` vs `diag`) | a Re=10 channel diverged; see §4.5 |
+| 8 | Implicit cross terms + ILU preconditioning | deferred correction cost 121–2584 sweeps |
+| 9 | Stokes eigenvalue verification (periodic and walled) | MMS cannot check a spectrum |
+| 10 | Inviscid energy-conservation check | the one property turbulence actually needs |
+| 11 | Inflow / outflow, convective and Dong | no open boundaries existed |
+| 12 | Multi-block: geometry → operators → PISO step | PICT's defining feature |
+
+**Four published claims were retracted along the way**, each after a measurement contradicted an
+earlier one. They are documented in place rather than quietly edited, because the *reason* each
+was wrong is more useful than the corrected number:
+
+- "not second order in time with walls" — measured outside the asymptotic range
+- "the deferred-correction warp limit is a solver property" — the grid tangles at the same warp
+- "the full operator stays symmetric" — true only for periodic BCs
+- an Orr-Sommerfeld extrapolation reported as 0.00% — circular, honest answer 4.5%
 
 ---
 
-## 2. Step-by-Step Conversion & Testing Plan
+## 4. Getting second order on non-linear flows
 
-To ensure the complex 3D curvilinear math is implemented perfectly, we will use the **Method of Manufactured Solutions (MMS)**. This involves feeding a known analytical equation into the solver and proving the numerical code recovers it.
+This is the operational section. Full detail in
+[`second_order_convective.md`](second_order_convective.md).
 
-### Phase 1: 3D Mesh & Metric Generation (MMS: 3D Wavy Grid)
-*   **Implementation:** Create a `Domain3D` Python class inside the new dedicated folder. Calculate the Jacobian $J$ and all 9 metric tensors at both cell centers and cell faces using NumPy gradients.
-*   **The MMS Setup:** To strictly validate the grid metrics, we will manufacture a known **3D Wavy Grid** mapping:
-    $$ x(\xi, \eta, \zeta) = \xi + A_x \sin(\pi \eta) \sin(\pi \zeta) $$
-    $$ y(\xi, \eta, \zeta) = \eta + A_y \sin(\pi \xi) \sin(\pi \zeta) $$
-    $$ z(\xi, \eta, \zeta) = \zeta + A_z \sin(\pi \xi) \sin(\pi \eta) $$
-    Using calculus, we will compute the *exact* analytical equations for all 9 metric tensors ($\xi_x, \xi_y$, etc.) and the exact analytical equation for the Jacobian $J$.
-*   **Pass Criteria:** 
-    1.  **Metric Accuracy:** The numerical metrics calculated by our Python code must match the exact analytical wavy grid equations. The $L_2$ error norm must decrease at exactly $O(\Delta^2)$ (second-order convergence) when the grid is refined.
-    2.  **3D Geometric Conservation Law (GCL):** The metrics must perfectly preserve uniform flow. The sum of the face metrics for a closed cell (e.g., $\frac{\partial}{\partial \xi}(J \xi_x) + \frac{\partial}{\partial \eta}(J \eta_x) + \frac{\partial}{\partial \zeta}(J \zeta_x)$) must equal zero down to machine precision ($< 10^{-14}$).
+### 4.1 Default settings
 
-### Phase 2: 3D Differential Operators (MMS: Trigo-Exponential Fields)
-*   **Implementation:** Write vectorized NumPy functions for 3D curvilinear `divergence` and `gradient` that consume the massive metric tensors computed in Phase 1.
-*   **The MMS Setup:** We will invent highly non-linear 3D analytical fields that exercise all spatial derivatives on our Wavy Grid:
-    *   **Pressure Field:** $p(x,y,z) = \sin(2\pi x) \cos(2\pi y) e^z$
-    *   **Velocity Field:** $\mathbf{V}(x,y,z) = [ \cos(\pi x)\sin(\pi y)\sin(\pi z), \;\sin(\pi x)\cos(\pi y)\sin(\pi z), \;\sin(\pi x)\sin(\pi y)\cos(\pi z) ]$
-    Using calculus, we will compute the exact analytical gradient ($\nabla p$) and exact analytical divergence ($\nabla \cdot \mathbf{V} = -3\pi \sin(\pi x) \sin(\pi y) \sin(\pi z)$).
-*   **Testing:** We will evaluate the analytical $p$ and $\mathbf{V}$ on our Wavy Grid nodes, transform the velocity into contravariant components using the metrics, and run them through our numerical `divergence()` and `gradient()` Python functions.
-*   **Pass Criteria:** The output of our Python operators must match the exact analytical calculus derivations, with the $L_2$ norm of the numerical error decreasing at a strict 2nd-order convergence rate when the 3D grid resolution is doubled.
+```python
+PISOSolver(...,
+    convection='central',      # SOU removes ~10% of KE per turnover on broadband fields
+    scheme='rotational',       # chorin is O(dt) regardless of the predictor
+    time_scheme='bdf2',
+    picard_iters=2,            # removes the O(dt) lag in the convecting velocity
+    pressure_coef='rowsum',    # diag under-corrects by 1 + 2 nu dt sum(1/h^2)
+    implicit_cross=True,       # warped grids only; it LOSES on near-orthogonal ones
+    momentum_dc_iters=2,       # momentum cross-diffusion, warped grids
+)
+```
 
-### Phase 3: Momentum Matrix Assembly (MMS: 3D Taylor-Green Vortex)
-*   **Implementation:** Build the massive SciPy sparse matrix $A$ for 3D curvilinear advection and diffusion. Solve $A \mathbf{u}^* = \text{RHS}$ using `scipy.sparse.linalg.bicgstab`.
-*   **The MMS Setup:** We will use the classic **3D Taylor-Green Vortex** as our analytical velocity field:
-    *   $u(x,y,z) = \sin(x) \cos(y) \cos(z)$
-    *   $v(x,y,z) = -\cos(x) \sin(y) \cos(z)$
-    *   $w(x,y,z) = 0$
-    We will mathematically derive the exact advection-diffusion source term $S = (\mathbf{u} \cdot \nabla)\mathbf{u} - \nu \nabla^2 \mathbf{u}$ required to perfectly sustain this vortex in physical space.
-*   **Testing:** We will feed that analytical source term $S$ into our numerical matrix solver as the $\text{RHS}$. 
-*   **Pass Criteria:** The `bicgstab` solver must successfully converge, and the output velocity field must match the Taylor-Green Vortex equations within a $10^{-4}$ tolerance despite the highly skewed 3D computational grid.
+`MultiBlockPISO` defaults to `scheme='rotational', picard_iters=2` for the same reasons.
 
-### Phase 4: Poisson Matrix Assembly & Solver (MMS: Trigo-Exponential Laplacian)
-*   **Implementation:** Construct the complex 27-point discrete 3D curvilinear Laplacian matrix $M$. Solve $M p^{n+1} = D$ using `scipy.sparse.linalg.cg`.
-*   **The MMS Setup:** We will recycle the exact same analytical pressure field from Phase 2: $p(x,y,z) = \sin(2\pi x) \cos(2\pi y) e^z$.
-    Using calculus, we derive the exact analytical Laplacian source term $f = \nabla^2 p$ for this field:
-    $$ f(x,y,z) = (1 - 8\pi^2) \sin(2\pi x) \cos(2\pi y) e^z $$
-*   **Testing:** We will feed this exact analytical $f$ into our massive 27-point matrix solver as the $\text{RHS}$.
-*   **Pass Criteria:** The Conjugate Gradient solver must converge, and the predicted pressure field must match the exact analytical solution $p(x,y,z)$ regardless of 3D grid skewness.
+### 4.2 The two O(Δt) errors that sit in front of BDF2
 
-### Phase 5: PISO Orchestration & Final Validation
-*   **Implementation:** Tie Predictor $\rightarrow$ Poisson $\rightarrow$ Corrector together into the final `piso_numpy_3d.py` script inside the new folder.
-*   **Testing 1 (3D Lid-Driven Cavity):** Simulate the classic 3D Lid-Driven Cavity on a heavily warped, non-orthogonal 3D grid. 
-*   **Testing 2 (3D Square Duct Flow):** Simulate fully developed 3D flow in a square pipe (rectangular duct) driven by a constant pressure gradient.
-*   **Pass Criteria:** 
-    1. The 3D Lid-Driven Cavity velocity field reaches steady-state matching standard literature benchmarks (e.g., Albensoeder & Kuhlmann for 3D cavities).
-    2. The fully developed 3D duct flow perfectly matches the analytical series solution for laminar flow in a rectangular cross-section.
-    3. Global 3D mass conservation (divergence) must rigidly remain $< 10^{-7}$ at every single time-step.
+| configuration | measured order |
+|---|---|
+| `chorin` + BDF2 | 0.93, 0.89, 0.95 |
+| `rotational` + BDF2, `picard_iters=1` | 1.32, 1.20, 1.08 |
+| **`rotational` + BDF2, `picard_iters=2`** | **2.19, 2.16, 2.09** |
 
----
-> [!IMPORTANT]
-> **User Review Required**
-> The plan now explicitly names **1st-Order Euler Implicit** as the time marching scheme for the Momentum Predictor, which perfectly matches the underlying CUDA implementation in PICT.
-> 
-> If you are ready to begin, please click **Proceed** and I will create the new folder and start coding Phase 1!
+BDF2 is in front of neither. **Chorin's splitting error** is first order whatever the predictor,
+and the momentum matrix assembled from the lagged $u^n$ is a second first-order error. A third
+Picard iteration buys nothing — the signature of a converged fixed point rather than a knob.
+
+> This is invisible in a near-linear test. `stokes_verification.md` measured **2.00** at
+> `picard_iters=1` because the perturbation amplitude was $10^{-4}$: convection was negligible,
+> so the lag cost nothing. **Second order in a linear test does not imply second order with
+> convection.**
+
+### 4.3 `central` is required, not preferred
+
+Inviscid energy production $P = \sum_c \mathbf{u}_c\cdot(C\mathbf{u}_c)\,\mathrm{d}V$ at $n=48$:
+
+| | Taylor-Green | random solenoidal |
+|---|---|---|
+| `central` | −5.8e-18 | +1.2e-16 |
+| `sou` | 5.36e-3 (0.54%/turnover) | 9.60e-2 (**10.35%**/turnover) |
+
+`central`'s convective operator is discretely skew-symmetric. `sou` removes 10% of the kinetic
+energy per eddy turnover on a broadband field — and any real convective flow is broadband. For an
+LES or a stability calculation that dissipation swamps the physics: the Orr-Sommerfeld growth
+rate at $Re=7500$ is $2.2\times10^{-3}$ per unit time, and SOU could flip its sign.
+
+### 4.4 Spatial order needs a consistent operator split
+
+- **Volume-integrated conservative form.** Using cell-centred $g^{11}$ without the Jacobian drops
+  an $O(1)$-in-warp term and makes the implicit/explicit split *inconsistent*: the error plateaus
+  instead of converging (rate 0.42 at warp 0.10).
+- **Cross terms**, on warped grids, in **both** operators — pressure *and* momentum. Getting only
+  the pressure one right produced a perfectly divergence-free field (6.7e-14) that was wrong by
+  5.5e-2 in velocity.
+
+### 4.5 The pressure coefficient
+
+$\Gamma = J/A_{\rm diag}$ under-corrects by $1 + 2\nu\Delta t\sum 1/h^2$, because the conservative
+diffusion and SOU advection operators have **exactly zero row sum** (7e-14 on warped grids).
+Chorin survives it; the accumulating schemes feed the deficit back each step and diverge — which
+is how a Re=10 channel blew up. `pressure_coef='rowsum'` gives $\Gamma = \Delta t$ exactly.
+
+### 4.6 Things to watch for when measuring the order
+
+Five traps, each of which produced a wrong published conclusion here first:
+
+1. **Richardson on differences, not total error** — the spatial error is a fixed offset that
+   swamps the temporal one.
+2. **Verify the asymptotic range.** One triple is not a measurement: orders read
+   0.80 → 1.68 → **2.00** across successively finer triples of the same study.
+3. **Spatial and temporal errors can have opposite signs.** In a 5×5 $(n,\Delta t)$ matrix the
+   best entry was the *coarsest* $\Delta t$ at the finest grid; refining $\Delta t$ made it worse.
+   Refine both together.
+4. **Do not measure inside a startup transient** — a continuous eigenmode is not a discrete one.
+   Reported order 0.04 for a scheme that is ~2.
+5. **Never derive the order from the reference value.** Defining the error as
+   $G_{\rm ref}-G(n)$ and extrapolating with *its* order cannot miss $G_{\rm ref}$.
+
+**And the meta-lesson:** a plausible physical explanation for a shortfall is what stops you
+checking whether the measurement converged. The retracted 1.68 had a real mechanism attached
+($O(\Delta t^{3/2})$ near-wall splitting error) and was still just a pre-asymptotic triple.
+
+### 4.7 What second order does *not* buy
+
+It is a statement about the **rate** at which error vanishes, not its size at affordable
+resolution. The Orr-Sommerfeld residual numerical damping is 1.09e-3 / 6.4e-4 / 2.5e-4 at
+$n_y = 97/129/201$ — converging at the design rate, and still comparable to the 2.2e-3 growth
+rate being measured.

@@ -858,3 +858,39 @@ class Domain:
               + np.gradient(fz, blk.h[2], axis=2, edge_order=2)) / Jp
         core = tuple(slice(plo[a], plo[a] + blk.shape[a]) for a in range(3))
         return cd[core]
+
+    def boundary_flux_totals(self, us, vs, ws, free_faces=()):
+        """
+        Net volume flux out of the WHOLE domain, split into the fixed part (inlet, walls) and
+        the part carried by the nominated outflow faces.
+
+        GLOBAL, and that is the point. Balancing block by block would force each block to be
+        individually conservative, which is wrong -- mass legitimately crosses a seam. Only the
+        domain-wide total has to vanish for the singular Neumann pressure system to be
+        compatible. Connected and periodic faces are skipped: they move no NET mass out of the
+        domain, they move it between blocks.
+        """
+        from phase5_fluxes import contravariant_components
+        free_set = {(b, f) for b, f in free_faces}
+        fixed = free = 0.0
+        for b, blk in enumerate(self.blocks):
+            Jp, mp, lo, hi = self.padded_geometry(b, 1)
+            up = self.pad_field(b, us, 1)[0]
+            vp = self.pad_field(b, vs, 1)[0]
+            wp = self.pad_field(b, ws, 1)[0]
+            JU = contravariant_components(up, vp, wp, Jp, mp)
+            core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
+            for fid, kind in enumerate(blk.faces):
+                if kind in ("connected", "periodic"):
+                    continue
+                axis, side = face_axis_side(fid)
+                w = np.prod([blk.h[a] for a in range(3) if a != axis])
+                sl = list(core); sl[axis] = core[axis].start if side == 0 \
+                    else core[axis].stop - 1
+                sgn = -1.0 if side == 0 else +1.0
+                flux = sgn * float(np.sum(JU[axis][tuple(sl)])) * w
+                if (b, fid) in free_set:
+                    free += flux
+                else:
+                    fixed += flux
+        return fixed, free

@@ -44,7 +44,7 @@ validate each one before moving on.
 | Inviscid energy conservation, central | **1e-16** — exact to round-off |
 | Inviscid energy loss, SOU | **10.35%** of E per turnover on a broadband field |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
-| Automated checks | **174**, all passing |
+| Automated checks | **176**, all passing |
 
 <p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
@@ -304,7 +304,7 @@ uv run test_outflow.py                     #  inflow/outflow BCs (Dong path has 
 uv run stokes_decay_study.py               #  decay + decay rate over a 100x amplitude drop
 uv run stokes_error_matrix.py              #  5x5 error matrix in (resolution, dt)
 uv run test_energy_conservation.py         #  6 checks: inviscid KE conservation (central vs SOU)
-uv run test_multiblock.py                  # 51 checks: seam ops, PISO step, 2x2, walls+warped
+uv run test_multiblock.py                  # 53 checks: seam ops, PISO, 2x2, walls, warped, outflow
 uv run test_chan_channel.py                #  4 checks: replicates an independent SEM solver (Chan 1996)
 uv run test_orr_sommerfeld.py              #  2 checks: Orr-Sommerfeld growth at Re=7500
 
@@ -340,7 +340,8 @@ uv run run_tgv3d.py      && uv run plot_tgv3d.py
 | [`stokes_verification.md`](piso_port/reference/stokes_verification.md) | Both Stokes eigenvalue problems in full — setup, methodology, the 5x5 error matrix, the opposite-sign error finding, and the defects the tests exposed (including four in the tests themselves) |
 | [`outflow_bcs.md`](piso_port/reference/outflow_bcs.md) | Inflow/outflow: what PICT actually does (and the cell-centred factor of 2 that does not transfer to a node-on-boundary grid), both treatments, results, and the diagnosis of the Dong defect — including the first hypothesis that turned out wrong |
 | [`multiblock_offsets.md`](piso_port/reference/multiblock_offsets.md) | How PICT joins blocks: the global index space, CSR offsets, and the axis-permutation connection map — with diagrams. PICT uses **no ghost cells**; coupling is implicit in one global matrix |
-| [`implementation_plan.md`](piso_port/reference/implementation_plan.md) · [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The original plan, the Phase 1–3 narrative, and the collocated-vs-staggered investigation |
+| [`implementation_plan.md`](piso_port/reference/implementation_plan.md) | The original five-phase plan, **what it got wrong about itself**, the route actually followed, and the operational section: default settings and the five ways an order measurement can mislead |
+| [`walkthrough.md`](piso_port/reference/walkthrough.md) · [`phase5_plan.md`](piso_port/reference/phase5_plan.md) | The Phase 1–3 narrative and the collocated-vs-staggered investigation |
 
 ---
 

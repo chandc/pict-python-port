@@ -74,6 +74,11 @@ class MultiBlockPISO:
         # scalars). Without it a periodic channel has nothing to drive it and the velocity stays
         # identically zero -- which looks like a solver failure and is not one.
         self.velocity_source = None
+        # Outflow faces as (block, face_id, U_c). They stay Dirichlet VELOCITY boundaries --
+        # PICT's design -- advected out each step and then rescaled so the DOMAIN-WIDE flux
+        # balances. Balancing per block would wrongly force each block to be individually
+        # conservative when mass legitimately crosses a seam.
+        self.outflow = []
         self.wall = domain.wall_mask()
         self.interior = np.where(~self.wall)[0]
         self.bnd = np.where(self.wall)[0]
@@ -107,8 +112,43 @@ class MultiBlockPISO:
             convect = (dict(self.u), dict(self.v), dict(self.w))
         return out
 
+    def _update_outflow(self):
+        """Advective outflow update, then GLOBAL flux balancing."""
+        from multiblock import face_axis_side, face_slice
+        d = self.d
+        for (b, fid, U_c) in self.outflow:
+            axis, side = face_axis_side(fid)
+            blk = d.blocks[b]
+            bs = face_slice(fid)
+            isl = [slice(None)] * 3
+            isl[axis] = 1 if side == 0 else -2
+            isl = tuple(isl)
+            # distance from the boundary node to the first interior node
+            dn = np.sqrt((blk.x[bs] - blk.x[isl]) ** 2 + (blk.y[bs] - blk.y[isl]) ** 2
+                         + (blk.z[bs] - blk.z[isl]) ** 2)
+            # alpha = dt*U_c/h_n, WITHOUT PICT's factor 2: they are cell-centred, our nodes sit
+            # ON the boundary, so the distance is h_n not h_n/2.
+            t = 1.0 - 1.0 / (1.0 + self.dt * abs(U_c) / dn)
+            for arr, bc in ((self.u, self.u_bc), (self.v, self.v_bc), (self.w, self.w_bc)):
+                bc[b][bs] = bc[b][bs] - t * (bc[b][bs] - arr[b][isl])
+                arr[b][bs] = bc[b][bs]
+        if not self.outflow:
+            return
+        faces = [(b, f) for (b, f, _) in self.outflow]
+        fixed, free = d.boundary_flux_totals(self.u, self.v, self.w, faces)
+        if abs(fixed + free) < 1e-14 or abs(free) < 1e-30:
+            return
+        scale = -fixed / free
+        for (b, fid, _) in self.outflow:
+            bs = face_slice(fid)
+            for arr, bc in ((self.u, self.u_bc), (self.v, self.v_bc), (self.w, self.w_bc)):
+                bc[b][bs] = bc[b][bs] * scale
+                arr[b][bs] = bc[b][bs]
+
     def _step_once(self, convect=None):
         d, nb = self.d, len(self.d.blocks)
+        if self.outflow:
+            self._update_outflow()
         if convect is None:
             convect = (self.u, self.v, self.w)
         # BDF2 needs two levels, so the FIRST step must fall back to Backward Euler -- there

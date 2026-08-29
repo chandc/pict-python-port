@@ -773,6 +773,66 @@ if __name__ == "__main__":
                   f"max|u - u_single| = {np.abs(ue - sk.u).max():.2e}, divergence {dmk:.1e}, "
                   f"walls stayed flat to {wall_moved:.1e}")
 
+    print("\n18. INFLOW / OUTFLOW across blocks (global flux balancing)")
+    # Note the node placement: with inflow/outflow the streamwise axis is NOT periodic, so the
+    # blocks must PARTITION the nodes without duplicating the interface -- 16 nodes into 4
+    # blocks of 4, not 5. Overlapping the seam node is what validate() forbids, and it is easy
+    # to write by reflex when splitting a linspace.
+    from outflow import Outflow
+    from phase1_grid_metrics import compute_numerical_metrics as _cnm2
+    NXo, NYo, NZo, NUo, DTo, Lo, UMo = 16, 13, 4, 0.05, 0.02, 4.0, 1.0
+    bco = Outflow(axis=0, side=1, kind="convective", U_c=2.0 / 3.0 * UMo)
+    so = PISOSolver((NXo, NYo, NZo), warp=1e-9, nu=NUo, dt=DTo, corrector_steps=2,
+                    periodic=(False, False, True), scheme="rotational", time_scheme="be",
+                    convection="central", boundary_flux_mode="from_velocity",
+                    pressure_coef="rowsum", pressure_tol=1e-12, outflow=[bco], picard_iters=1)
+    xi1 = np.linspace(0, 1, NXo); eta1 = np.linspace(0, 1, NYo); ze1 = np.arange(NZo) / NZo
+    Xo, Yo, Zo = np.meshgrid(xi1, eta1, ze1, indexing="ij")
+    so.x, so.y, so.z = Lo * Xo, Yo, Zo
+    so.h = (1.0 / (NXo - 1), 1.0 / (NYo - 1), 1.0 / NZo)
+    so.J, so.metrics = _cnm2(so.x, so.y, so.z, *so.h, periodic=so.per)
+    profo = 4 * UMo * so.y * (1 - so.y)
+    so.u_bc[0, :, :] = profo[0]; so.u_bc[:, 0, :] = 0; so.u_bc[:, -1, :] = 0
+    hold = np.zeros_like(profo[-1], dtype=bool); hold[0, :] = True; hold[-1, :] = True
+    bco.hold = hold
+    so.u_bc[-1, :, :] = profo[-1]
+    so.u[:] = profo; so.u[:, 0, :] = 0; so.u[:, -1, :] = 0
+    with _cl.redirect_stdout(_io.StringIO()):
+        for _ in range(800):
+            so.step()
+    Lsingle = np.sqrt(np.mean((so.u - profo) ** 2)) / UMo
+
+    for n_split in (2, 4):
+        nxb = NXo // n_split
+        bl = []
+        for b in range(n_split):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NYo, NZo), so.x[sl], so.y[sl], so.z[sl], so.h)
+            blk.faces[face_id(1, 0)] = blk.faces[face_id(1, 1)] = "wall"
+            blk.faces[face_id(2, 0)] = blk.faces[face_id(2, 1)] = "periodic"
+            bl.append(blk)
+        do = Domain(bl, [Connection(b, face_id(0, 1), b + 1, face_id(0, 0))
+                         for b in range(n_split - 1)])
+        m = MultiBlockPISO(do, NUo, DTo, 2, 1e-12, time_scheme="be", scheme="rotational",
+                           picard_iters=1)
+        m.outflow = [(n_split - 1, face_id(0, 1), 2.0 / 3.0 * UMo)]
+        for b in range(n_split):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            m.u[b] = profo[sl].copy(); m.u[b][:, 0, :] = 0; m.u[b][:, -1, :] = 0
+            m.u_bc[b][:, 0, :] = 0; m.u_bc[b][:, -1, :] = 0
+        m.u_bc[0][0, :, :] = profo[0]
+        m.u_bc[n_split - 1][-1, :, :] = profo[-1]
+        m.u_bc[n_split - 1][-1, 0, :] = 0; m.u_bc[n_split - 1][-1, -1, :] = 0
+        for _ in range(800):
+            m.step()
+        ue = np.concatenate([m.u[b] for b in range(n_split)], axis=0)
+        Lmulti = np.sqrt(np.mean((ue - profo) ** 2)) / UMo
+        check(f"{n_split}-block inflow/outflow matches single-block and the exact parabola",
+              do.validate() == [] and np.abs(ue - so.u).max() < 1e-8
+              and abs(Lmulti - Lsingle) < 1e-9,
+              f"L2/Umax {Lmulti:.3e} (single block {Lsingle:.3e}); "
+              f"max|u - u_single| = {np.abs(ue - so.u).max():.2e}")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)
