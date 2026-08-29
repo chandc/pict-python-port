@@ -252,6 +252,72 @@ if __name__ == "__main__":
           f"decoupled solve differs from the true solution by {err_d:.2e} "
           f"-- it converges happily and is wrong")
 
+    print("\n8. A block connected to ITSELF is a full-period wrap")
+    # Found while running a multi-block MMS Poisson: with one block whose +x joins its own -x,
+    # the connection still crosses a whole period, so it needs the period shift exactly as a
+    # two-block wrap does. Omitting it degraded the seam and dropped the solve to FIRST order
+    # (8.9e-2 vs 1.9e-2 at ntot=8) while validate() reported nothing -- the interface nodes are
+    # genuinely distinct, so the duplicated-node check cannot see it. Gated here instead.
+    import scipy.sparse.linalg as spla2
+
+    def periodic_mms(ntot, n_split, shift_selfwrap=True):
+        nxb = ntot // n_split
+        xi1 = np.arange(ntot) / ntot
+        Xg, Yg, Zg = np.meshgrid(xi1, xi1, xi1, indexing="ij")
+        blks = []
+        for b in range(n_split):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, ntot, ntot), Xg[sl], Yg[sl], Zg[sl],
+                        (1.0 / ntot,) * 3)
+            for a in (1, 2):
+                blk.faces[face_id(a, 0)] = blk.faces[face_id(a, 1)] = "periodic"
+            blks.append(blk)
+        cs = []
+        for b in range(n_split):
+            nb = (b + 1) % n_split
+            wraps = (nb == 0)
+            sh = (1.0, 0.0, 0.0) if (wraps and shift_selfwrap) else (0.0, 0.0, 0.0)
+            cs.append(Connection(b, face_id(0, 1), nb, face_id(0, 0), shift=sh))
+        dm = Domain(blks, cs)
+        Js2, ms2 = [], []
+        for b in range(n_split):
+            Jb, mb = dm.block_metrics(b); Js2.append(Jb); ms2.append(mb)
+        M2 = dm.build_diffusion_matrix(Js2, ms2)
+        xa = np.concatenate([bk.x.ravel() for bk in blks])
+        ya = np.concatenate([bk.y.ravel() for bk in blks])
+        za = np.concatenate([bk.z.ravel() for bk in blks])
+        pe = np.sin(2 * np.pi * xa) * np.sin(2 * np.pi * ya) * np.sin(2 * np.pi * za)
+        Ja = np.concatenate([J.ravel() for J in Js2])
+        rr = -(Ja * (-3 * (2 * np.pi) ** 2 * pe)); rr -= rr.mean()
+        fr = np.arange(M2.shape[0])[1:]
+        pp = np.zeros(M2.shape[0])
+        pp[fr] = spla2.cg(M2[fr][:, fr].tocsr(), rr[fr], rtol=1e-14, maxiter=50000)[0]
+        pp -= pp.mean()
+        return np.sqrt(np.mean((pp - (pe - pe.mean())) ** 2))
+
+    print(f"   {'ntot':>5} {'1 block':>12} {'2 blocks':>12} {'4 blocks':>12}")
+    errs_by_split, prev_row = {}, None
+    for ntot in (8, 16):
+        row = {ns: periodic_mms(ntot, ns) for ns in (1, 2, 4)}
+        line = f"   {ntot:5d}" + "".join(f"{row[k]:12.4e}" for k in (1, 2, 4))
+        if prev_row:
+            line += "   order " + ", ".join(f"{np.log2(prev_row[k]/row[k]):.2f}" for k in (1, 2, 4))
+        print(line)
+        errs_by_split[ntot] = row
+        prev_row = row
+    spread = max(abs(errs_by_split[16][k] / errs_by_split[16][1] - 1) for k in (2, 4))
+    check("MMS Poisson: the number of blocks does not change the answer",
+          spread < 1e-9,
+          f"1, 2 and 4 blocks agree to {spread:.1e} relative; order "
+          f"{np.log2(errs_by_split[8][4]/errs_by_split[16][4]):.2f}")
+
+    bad_e = periodic_mms(16, 1, shift_selfwrap=False)
+    good_e = errs_by_split[16][1]
+    check("omitting the self-wrap period shift is caught",
+          bad_e > 3 * good_e,
+          f"without the shift {bad_e:.3e} vs {good_e:.3e} -- {bad_e/good_e:.1f}x worse, and "
+          f"validate() cannot see it (the nodes are genuinely distinct)")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

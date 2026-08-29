@@ -371,6 +371,19 @@ is what a block-diagonal preconditioner effectively does — leaves the blocks i
 solve still converges, reports no error, and is wrong by **1.3e+16**. `test_multiblock.py`
 includes that case, so the split-equals-whole gate is known to have teeth rather than assumed to.
 
+### MMS Poisson across seams: the number of blocks is irrelevant
+
+A manufactured-solution Poisson problem solved on 1, 2 and 4 blocks gives **byte-identical**
+errors — 1.8749e-02 at $n=8$ and 4.5788e-03 at $n=16$, order **2.03** — so the decomposition has
+no effect whatever on the answer, which is what a correct multi-block implementation owes.
+
+**A block joined to ITSELF is a full-period wrap.** With one block whose `+x` meets its own
+`-x`, the connection still crosses a whole period and needs the period shift exactly as a
+two-block wrap does. Omitting it made the solve **9.9× worse** and dropped it to first order —
+and `validate()` could not see it, because the interface nodes are genuinely distinct, so the
+duplicated-node check has nothing to catch. It is gated by the MMS test instead. Worth noting as
+a class: some seam errors are invisible to structural checks and only a *solve* reveals them.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
