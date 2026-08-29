@@ -431,6 +431,58 @@ if __name__ == "__main__":
           "SOU reaches i-2 and needs wider seam handling; a silent fallback would change the "
           "physics, since SOU removes ~10% of KE per turnover where central conserves it")
 
+    print("\n12. A FULL PISO STEP ACROSS BLOCKS")
+    # Cartesian and fully periodic on purpose: that is the configuration where the multi-block
+    # result can be compared against the single-block solver EXACTLY, with no cross terms and
+    # no boundary conditions to confound it.
+    import io as _io, contextlib as _cl
+    from piso_multiblock import MultiBlockPISO
+    from piso_numpy_3d import PISOSolver
+    NTp, NUp, Kp = 8, 0.05, 2 * np.pi
+
+    def cart_split(n):
+        nxb = NTp // n
+        xi1 = np.arange(NTp) / NTp
+        Xc, Yc, Zc = np.meshgrid(xi1, xi1, xi1, indexing="ij")
+        bl = []
+        for b in range(n):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NTp, NTp), Xc[sl], Yc[sl], Zc[sl], (1.0 / NTp,) * 3)
+            for a in (1, 2):
+                blk.faces[face_id(a, 0)] = blk.faces[face_id(a, 1)] = "periodic"
+            bl.append(blk)
+        return Domain(bl, [Connection(b, face_id(0, 1), (b + 1) % n, face_id(0, 0),
+                                      shift=(1.0, 0, 0) if (b + 1) % n == 0 else (0, 0, 0))
+                           for b in range(n)])
+
+    for ts in ("be", "bdf2"):
+        DTp = 0.02
+        sref = PISOSolver((NTp, NTp, NTp), warp=1e-9, nu=NUp, dt=DTp, corrector_steps=2,
+                          periodic=P3, scheme="chorin", time_scheme=ts, convection="central",
+                          pressure_coef="rowsum", pressure_tol=1e-13)
+        u0 = np.sin(Kp * sref.x) * np.cos(Kp * sref.y) * np.cos(Kp * sref.z)
+        v0 = -np.cos(Kp * sref.x) * np.sin(Kp * sref.y) * np.cos(Kp * sref.z)
+        sref.u, sref.v, sref.w = u0.copy(), v0.copy(), np.zeros_like(u0)
+        with _cl.redirect_stdout(_io.StringIO()):
+            for _ in range(10):
+                dsingle = sref.step()
+        for n_split in (2, 4):
+            dm = cart_split(n_split)
+            mb = MultiBlockPISO(dm, NUp, DTp, 2, 1e-13, time_scheme=ts)
+            nxb = NTp // n_split
+            for b in range(n_split):
+                mb.u[b] = u0[b * nxb:(b + 1) * nxb].copy()
+                mb.v[b] = v0[b * nxb:(b + 1) * nxb].copy()
+            for _ in range(10):
+                dmulti = mb.step()
+            ue = np.concatenate([mb.u[b] for b in range(n_split)], axis=0)
+            ve = np.concatenate([mb.v[b] for b in range(n_split)], axis=0)
+            err = max(np.abs(ue - sref.u).max(), np.abs(ve - sref.v).max())
+            check(f"{n_split}-block PISO step ({ts}) reproduces the single-block trajectory",
+                  err < 1e-8 and dmulti < 1e-12,
+                  f"max|u - u_single| = {err:.2e} after 10 steps; flux divergence "
+                  f"{dmulti:.1e} (single block {dsingle:.1e})")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

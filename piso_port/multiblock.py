@@ -653,3 +653,59 @@ class Domain:
         return sparse.coo_matrix((np.concatenate(vals),
                                   (np.concatenate(rows), np.concatenate(cols))),
                                  shape=(N, N)).tocsr()
+
+    def gradient(self, b, ps, width=1):
+        """Physical gradient of a scalar on block b, with seams resolved from the neighbour."""
+        pp = self.pad_field(b, ps, width)[0]
+        Jp, mp, lo, hi = self.padded_geometry(b, width)
+        blk = self.blocks[b]
+        core = tuple(slice(lo[a], lo[a] + blk.shape[a]) for a in range(3))
+        d = []
+        for axis in range(3):
+            g = np.gradient(pp, blk.h[axis], axis=axis, edge_order=2)
+            d.append(g)
+        out = []
+        for comp in ("x", "y", "z"):
+            tot = sum(mp[f"{k}_{comp}"] * d[a]
+                      for a, k in enumerate(("xi", "eta", "zeta")))
+            out.append(tot[core])
+        return out
+
+    def pressure_face_fluxes(self, b, ps, coef_b, coefs):
+        """
+        Pressure flux through each face of block b, with seams resolved from the neighbour.
+
+        Mirrors phase5_fluxes.pressure_face_fluxes: Phi_f = c_f (p_N - p_P)/h with c_f the SAME
+        face-interpolated coefficient the matrix carries, so the discrete divergence of Phi is
+        exactly the matrix action. Domain boundary faces stay zero (Neumann); a CONNECTED face
+        is an interior face and gets a real neighbour difference.
+        """
+        blk = self.blocks[b]
+        pp = self.pad_field(b, ps, 1)[0]
+        cc = self.pad_field(b, coefs, 1)[0]
+        Jp, mp, lo, hi = self.padded_geometry(b, 1)
+        out = []
+        for axis in range(3):
+            key = ("xi", "eta", "zeta")[axis]
+            g = mp[f"{key}_x"] ** 2 + mp[f"{key}_y"] ** 2 + mp[f"{key}_z"] ** 2
+            Jg = cc * Jp * g
+            n = blk.shape[axis]
+            shape = list(blk.shape); shape[axis] += 1
+            f = np.zeros(shape)
+            core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
+            for k in range(n + 1):
+                a_lo, a_hi = lo[axis] + k - 1, lo[axis] + k
+                if a_lo < 0 or a_hi >= Jg.shape[axis]:
+                    continue                              # domain boundary: zero flux (Neumann)
+                s1 = list(core); s1[axis] = a_lo
+                s2 = list(core); s2[axis] = a_hi
+                # ONE division by h, not two. The matrix carries cf = 0.5(Jg_P+Jg_N)/h^2 and
+                # divergence_from_fluxes divides by h again, so for J*div(Phi) to equal the
+                # matrix action the flux must be 0.5(Jg_P+Jg_N)(p_N-p_P)/h. An extra 1/h makes
+                # the correction h^-1 times too large -- a factor of 8 at h=1/8, which blows the
+                # solution up rather than degrading it quietly.
+                cf = 0.5 * (Jg[tuple(s1)] + Jg[tuple(s2)])
+                sl_out = [slice(None)] * 3; sl_out[axis] = k
+                f[tuple(sl_out)] = cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
+            out.append(f)
+        return out

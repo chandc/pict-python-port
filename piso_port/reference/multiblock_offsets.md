@@ -438,6 +438,54 @@ of kinetic energy per turnover on a broadband field where central conserves it t
 `convection='sou'` raises `NotImplementedError`. That is also the right default for this work:
 central is the scheme required for anything where dissipation matters.
 
+### A full PISO step across blocks: landed
+
+`piso_multiblock.MultiBlockPISO` runs a complete step across blocks and reproduces the
+single-block trajectory to **7.4e-10** (BE) and **7.9e-10** (BDF2) after 10 steps, with flux
+divergence at machine precision. Scope is fully periodic and Cartesian on purpose: that is the
+configuration where an *exact* single-block comparison exists, with no cross terms and no
+boundary conditions to confound it.
+
+Three orchestration mistakes it had to get past, all global-vs-local:
+
+- **The pressure pin is global** — one cell for the whole domain. One per block lets each block's
+  pressure level float independently, and it still converges.
+- **Γ comes from the global matrix.** `coef = J/rowsum(A)` must use the assembled global A, or
+  seam rows get a coefficient computed as if their neighbours did not exist.
+- **A units error in the pressure flux.** Deriving from the matrix,
+  $\Phi = \tfrac12(Jg_P+Jg_N)(p_N-p_P)/h$ needs **one** division by $h$; two makes the
+  correction $h^{-1}$ too large — a factor of 8 at $h=1/8$ — and the solution blows up.
+
+And one self-inflicted detour worth recording: seeing a divergence of 9.5e-2 against the single
+block's 8.9e-16, the corrector was rewritten to carry corrected fluxes forward. The single-block
+loop actually **recomputes** the flux from the current velocities every corrector and only
+*reports* the corrected flux's divergence at the end. The original code was right; the "fix"
+made the velocity drift 1% while the divergence diagnostic looked perfect.
+
+### Temporal order: BDF2 is carried, but two O(Δt) errors sit in front of it
+
+Measured on the multi-block solver, and identical to single-block:
+
+| configuration | measured order |
+|---|---|
+| chorin + BDF2 | 0.93, 0.89, 0.95 |
+| rotational + BDF2, `picard_iters=1` | 1.32, 1.20, 1.08 |
+| **rotational + BDF2, `picard_iters=2`** | **2.19, 2.16, 2.09** |
+
+Two separate first-order errors cap the scheme before BDF2 can matter: **Chorin's splitting
+error** (the non-incremental projection is first order regardless of the predictor) and the
+**Picard lag** on the convecting velocity, since the momentum matrix is assembled from $u^n$.
+One extra Picard iteration removes the second; a third buys nothing.
+
+This also resolves an apparent conflict with `stokes_verification.md`, which measured order 2.00
+at `picard_iters=1`. That test used a perturbation amplitude of 1e-4, so **convection was
+negligible and the lag cost nothing**. With convection active it dominates. The second-order
+claim therefore holds for near-linear flows and *not* for convectively driven ones unless
+`picard_iters=2`.
+
+Multi-block currently supports `chorin` only, so it is capped at first order until the
+rotational scheme and Picard iteration are added.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
