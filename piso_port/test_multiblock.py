@@ -468,7 +468,10 @@ if __name__ == "__main__":
                 dsingle = sref.step()
         for n_split in (2, 4):
             dm = cart_split(n_split)
-            mb = MultiBlockPISO(dm, NUp, DTp, 2, 1e-13, time_scheme=ts)
+            # spell out scheme and picard so this gate does not silently follow a change
+            # of defaults -- it compares against a chorin/picard=1 single-block run
+            mb = MultiBlockPISO(dm, NUp, DTp, 2, 1e-13, time_scheme=ts,
+                                scheme='chorin', picard_iters=1)
             nxb = NTp // n_split
             for b in range(n_split):
                 mb.u[b] = u0[b * nxb:(b + 1) * nxb].copy()
@@ -482,6 +485,63 @@ if __name__ == "__main__":
                   err < 1e-8 and dmulti < 1e-12,
                   f"max|u - u_single| = {err:.2e} after 10 steps; flux divergence "
                   f"{dmulti:.1e} (single block {dsingle:.1e})")
+
+    print("\n13. SECOND-ORDER TIME ACROSS BLOCKS (rotational + BDF2 + Picard)")
+    # BDF2 alone does not deliver second order once convection is active: chorin's splitting
+    # error and the Picard lag on the convecting velocity are each O(dt) and sit in front of it.
+    # Both must be removed, and the multi-block solver must reproduce that.
+    def mb_run(dt, pic, scheme, n=4, T=0.16):
+        dm = cart_split(n)
+        m = MultiBlockPISO(dm, NUp, dt, 2, 1e-14, time_scheme="bdf2",
+                           scheme=scheme, picard_iters=pic)
+        nxb = NTp // n
+        xi1 = np.arange(NTp) / NTp
+        Xc, Yc, Zc = np.meshgrid(xi1, xi1, xi1, indexing="ij")
+        ua = np.sin(Kp * Xc) * np.cos(Kp * Yc) * np.cos(Kp * Zc)
+        va = -np.cos(Kp * Xc) * np.sin(Kp * Yc) * np.cos(Kp * Zc)
+        for b in range(n):
+            m.u[b] = ua[b * nxb:(b + 1) * nxb].copy()
+            m.v[b] = va[b * nxb:(b + 1) * nxb].copy()
+        for _ in range(int(round(T / dt))):
+            m.step()
+        return np.concatenate([m.u[b] for b in range(n)], axis=0)
+
+    DTt = (0.02, 0.01, 0.005, 0.0025, 0.00125)
+    for pic, lo_bar, hi_bar, tag in ((1, 0.9, 1.6, "capped by the Picard lag"),
+                                     (2, 1.9, 2.4, "second order")):
+        Ut = [mb_run(dt, pic, "rotational") for dt in DTt]
+        ordt = [np.log2(np.abs(Ut[i] - Ut[i + 1]).max() / np.abs(Ut[i + 1] - Ut[i + 2]).max())
+                for i in range(len(DTt) - 2)]
+        print(f"   rotational+BDF2, picard_iters={pic}: orders " +
+              ", ".join(f"{o:.2f}" for o in ordt) + f"   ({tag})")
+        check(f"multi-block temporal order with picard_iters={pic} is {tag}",
+              lo_bar < min(ordt) and max(ordt) < hi_bar,
+              f"orders {', '.join(f'{o:.2f}' for o in ordt)}")
+
+    # and it must still be the SAME answer as the single-block solver in that configuration
+    sref = PISOSolver((NTp, NTp, NTp), warp=1e-9, nu=NUp, dt=0.02, corrector_steps=2,
+                      periodic=P3, scheme="rotational", time_scheme="bdf2",
+                      convection="central", pressure_coef="rowsum", pressure_tol=1e-14,
+                      picard_iters=2)
+    u0 = np.sin(Kp * sref.x) * np.cos(Kp * sref.y) * np.cos(Kp * sref.z)
+    v0 = -np.cos(Kp * sref.x) * np.sin(Kp * sref.y) * np.cos(Kp * sref.z)
+    sref.u, sref.v, sref.w = u0.copy(), v0.copy(), np.zeros_like(u0)
+    with _cl.redirect_stdout(_io.StringIO()):
+        for _ in range(10):
+            sref.step()
+    dm = cart_split(4)
+    m = MultiBlockPISO(dm, NUp, 0.02, 2, 1e-14, time_scheme="bdf2", scheme="rotational",
+                       picard_iters=2)
+    nxb = NTp // 4
+    for b in range(4):
+        m.u[b] = u0[b * nxb:(b + 1) * nxb].copy()
+        m.v[b] = v0[b * nxb:(b + 1) * nxb].copy()
+    for _ in range(10):
+        dmv = m.step()
+    ue = np.concatenate([m.u[b] for b in range(4)], axis=0)
+    check("rotational+BDF2+Picard multi-block matches the single-block trajectory",
+          np.abs(ue - sref.u).max() < 1e-8 and dmv < 1e-12,
+          f"max|u - u_single| = {np.abs(ue - sref.u).max():.2e}, flux divergence {dmv:.1e}")
 
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")

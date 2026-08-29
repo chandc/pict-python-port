@@ -26,7 +26,8 @@ import scipy.sparse.linalg as spla
 
 
 class MultiBlockPISO:
-    def __init__(self, domain, nu, dt, corrector_steps=2, tol=1e-13, time_scheme='bdf2'):
+    def __init__(self, domain, nu, dt, corrector_steps=2, tol=1e-13, time_scheme='bdf2',
+                 scheme='rotational', picard_iters=2):
         self.d = domain
         self.nu, self.dt = nu, dt
         # BDF2 by default, matching the single-block solver. The single-block Stokes study
@@ -35,6 +36,13 @@ class MultiBlockPISO:
         # blocks rather than quietly dropping to Backward Euler.
         self.time_scheme = time_scheme
         self.u_prev = None
+        # 'rotational' and picard_iters=2 by default, because BOTH are needed for second order
+        # once convection is active. chorin's splitting error is O(dt) regardless of the
+        # predictor, and the momentum matrix is assembled from the lagged u^n, which is a
+        # second O(dt) error. Measured: 0.93 / 1.20 / 2.16 for chorin+bdf2, rotational with
+        # picard_iters=1, and rotational with picard_iters=2.
+        self.scheme = scheme
+        self.picard_iters = picard_iters
         self.corrector_steps = corrector_steps
         self.tol = tol
         self.Js, self.ms = [], []
@@ -58,14 +66,40 @@ class MultiBlockPISO:
         return out
 
     def step(self):
+        """Advance one step, repeating the Picard linearisation if asked."""
+        if self.picard_iters <= 1:
+            return self._step_once()
+        u0 = (dict(self.u), dict(self.v), dict(self.w))
+        p0 = dict(self.p)
+        prev0 = self.u_prev
+        convect, out = None, None
+        for _k in range(self.picard_iters):
+            if _k > 0:
+                # restore the starting state so time advances ONCE, and rebuild A from the
+                # latest u* -- that is what removes the O(dt) lag in the convecting velocity
+                self.u, self.v, self.w = dict(u0[0]), dict(u0[1]), dict(u0[2])
+                self.p, self.u_prev = dict(p0), prev0
+            out = self._step_once(convect)
+            convect = (dict(self.u), dict(self.v), dict(self.w))
+        return out
+
+    def _step_once(self, convect=None):
         d, nb = self.d, len(self.d.blocks)
+        if convect is None:
+            convect = (self.u, self.v, self.w)
         # BDF2 needs two levels, so the FIRST step must fall back to Backward Euler -- there
         # is no u^{n-1} yet. Using a zero previous level instead would silently corrupt the
         # first step and, with it, every convergence study built on short runs.
         bdf2 = (self.time_scheme == 'bdf2' and self.u_prev is not None)
-        A = d.build_momentum_matrix(self.Js, self.ms, self.u, self.v, self.w,
+        A = d.build_momentum_matrix(self.Js, self.ms, convect[0], convect[1], convect[2],
                                     self.nu, self.dt, bdf2=bdf2)
         Jg = self._flat({b: self.Js[b] for b in range(nb)})
+
+        if self.scheme in ('incremental', 'rotational'):
+            g = {b: d.gradient(b, self.p) for b in range(nb)}
+            gp = [self._flat({b: g[b][c] for b in range(nb)}) for c in range(3)]
+        else:
+            gp = None
 
         # --- momentum predictor, all three components on the GLOBAL matrix
         star = []
@@ -76,7 +110,9 @@ class MultiBlockPISO:
                 trans = (2.0 * phi_n - 0.5 * self._flat(self.u_prev[k])) / self.dt
             else:
                 trans = phi_n / self.dt
-            rhs = Jg * trans
+            # incremental/rotational carry the OLD pressure gradient into the predictor
+            # (PICT's applyPressureGradient=True); chorin does not.
+            rhs = Jg * (trans - gp[k]) if gp is not None else Jg * trans
             x, info = spla.bicgstab(A, rhs, x0=phi_n, rtol=self.tol, maxiter=20000)
             star.append(self._unflat(x))
         us, vs, ws = star
@@ -91,6 +127,7 @@ class MultiBlockPISO:
         M_ff = M[free][:, free].tocsr()
 
         phi_tot = {b: np.zeros(bl.shape) for b, bl in enumerate(d.blocks)}
+        div_star = None
         # Fluxes are RECOMPUTED from the current velocities at the start of every corrector,
         # matching the single-block loop exactly. Carrying the corrected flux forward instead
         # changes the algorithm: it still converges and still reports a divergence of 1e-16,
@@ -104,6 +141,8 @@ class MultiBlockPISO:
             for b in range(nb):
                 Fb[b] = d.face_fluxes(b, us, vs, ws)
                 divF[b] = d.divergence(b, Fb[b], self.Js[b])
+            if div_star is None:
+                div_star = {b: divF[b].copy() for b in range(nb)}   # predictor divergence
             rhs = -(Jg * self._flat(divF))
             rhs = rhs - rhs.mean()                        # compatibility (M is singular)
             sol, info = spla.cg(M_ff, rhs[free], rtol=self.tol, maxiter=20000)
@@ -118,7 +157,16 @@ class MultiBlockPISO:
                 Fb[b] = [Fb[b][a] - Phi[a] for a in range(3)]
                 phi_tot[b] = phi_tot[b] + pp[b]
 
-        self.p = phi_tot                                  # chorin: recomputed, not accumulated
+        if self.scheme == 'chorin':
+            self.p = phi_tot                              # recomputed, never accumulated
+        elif self.scheme == 'incremental':
+            self.p = {b: self.p[b] + phi_tot[b] for b in range(nb)}
+        elif self.scheme == 'rotational':
+            # p <- p + phi - nu*div(u*), cancelling the spurious dp/dn = 0 the projection
+            # otherwise imposes
+            self.p = {b: self.p[b] + phi_tot[b] - self.nu * div_star[b] for b in range(nb)}
+        else:
+            raise ValueError(f"unknown scheme {self.scheme!r}")
         self.u_prev = (dict(self.u), dict(self.v), dict(self.w))
         self.u, self.v, self.w = us, vs, ws
         div = 0.0

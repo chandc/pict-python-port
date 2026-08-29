@@ -483,8 +483,22 @@ negligible and the lag cost nothing**. With convection active it dominates. The 
 claim therefore holds for near-linear flows and *not* for convectively driven ones unless
 `picard_iters=2`.
 
-Multi-block currently supports `chorin` only, so it is capped at first order until the
-rotational scheme and Picard iteration are added.
+**Both are now implemented across blocks**, and the multi-block solver recovers second order:
+
+| multi-block, rotational + BDF2 | measured order |
+|---|---|
+| `picard_iters=1` | 1.32, 1.20, 1.08 |
+| **`picard_iters=2`** | **2.19, 2.16, 2.09** |
+
+identical to single-block, and the 4-block trajectory still matches the single-block one to
+7.9e-10 with flux divergence 5.6e-16. `MultiBlockPISO` therefore defaults to
+`scheme='rotational', picard_iters=2` — the configuration that actually delivers the design
+order once convection is active.
+
+Changing those defaults broke four existing gates, which had been comparing against a
+chorin/`picard_iters=1` single-block run while relying on the constructor's defaults for the
+multi-block side. They now state their configuration explicitly. A test that inherits a default
+is a test that silently changes meaning when the default does.
 
 ### Still to build
 
