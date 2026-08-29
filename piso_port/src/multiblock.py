@@ -680,7 +680,16 @@ class Domain:
         reference/pressure_checkerboard.md.
         """
         blk = self.blocks[b]
-        pp = self.pad_field(b, ps, 1)[0]
+        pp, plo, _phi = self.pad_field(b, ps, 1)
+        # The Rhie-Chow WIDE half needs a central np.gradient at EVERY cell a face touches,
+        # including the ghost. On a width-1 pad np.gradient is one-sided at the ghost, and
+        # each block pads from its own neighbour -- so the two sides of a seam disagree
+        # (measured mismatch 1.08e+02) and the flux creates mass there. A width-2 pad makes
+        # the stencil central at every width-1 cell; the extra layer is then trimmed away.
+        pp2 = None
+        if rhie_chow:
+            pp2, lo2, _h2 = self.pad_field(b, ps, 2)
+            _off = tuple(lo2[a] - plo[a] for a in range(3))
         KEYS = (("xi_x", "xi_y", "xi_z"), ("eta_x", "eta_y", "eta_z"),
                 ("zeta_x", "zeta_y", "zeta_z"))
 
@@ -711,7 +720,10 @@ class Domain:
             shape = list(blk.shape); shape[axis] += 1
             f = np.zeros(shape)
             # the wide counterpart of the compact face difference, on the SAME padded field
-            dpw = np.gradient(pp, blk.h[axis], axis=axis, edge_order=2) if rhie_chow else None
+            dpw = None
+            if rhie_chow:
+                g2 = np.gradient(pp2, blk.h[axis], axis=axis, edge_order=2)
+                dpw = g2[tuple(slice(_off[a], _off[a] + pp.shape[a]) for a in range(3))]
             core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
             ccore = [slice(glo[a], glo[a] + blk.shape[a]) for a in range(3)] \
                 if include_cross else None

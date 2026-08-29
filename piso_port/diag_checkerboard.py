@@ -47,6 +47,45 @@ def odd_even_abs(F):
     return np.mean(odd), np.mean(tot), 1.0 - len(tot) / F.shape[0]
 
 
+def nyquist_amp(F, axis=1):
+    """TRUE amplitude of the node-to-node (-1)^j mode: the exact Fourier coefficient at
+    the Nyquist wavenumber, averaged over profiles.
+
+    odd_even_abs uses a 1-2-1 smoother, whose deviation from a SMOOTH curved profile is
+    ~(h^2/4) f'' -- real curvature, not oscillation. That is tolerable for pressure, where
+    the checkerboard dominates, and badly misleading for velocity, where a parabolic channel
+    profile's curvature swamps any actual mode. This projector sees only the alternating
+    component and is blind to smooth structure of any order.
+    """
+    G = np.moveaxis(F, axis, 0)
+    n = G.shape[0]
+    sign = (-1.0) ** np.arange(n)
+    amp = np.abs(np.tensordot(sign, G, axes=(0, 0))) / n
+    return float(np.mean(amp))
+
+
+def checkerboard(F, axis=1):
+    """(amplitude, flip_fraction) -- the honest pair. Neither number is safe alone.
+
+    flip_fraction is the DETECTOR: the fraction of consecutive node pairs where the slope
+    reverses. A pure node-to-node mode flips at every pair (1.00); a smooth profile almost
+    never does. amplitude is the 1-2-1 deviation, which is only a checkerboard magnitude
+    when the flip fraction is high -- on a smooth curved profile it reports ~(h^2/4) f''.
+
+    Both single-number metrics tried before this were wrong in opposite directions. The
+    1-2-1 deviation alone called a parabolic velocity profile's curvature a 1.9e-02
+    oscillation (7% flips). A global (-1)^j Fourier projection alone called a genuine
+    checkerboard 1.6e-16 (88% flips) because the mode's envelope is antisymmetric about the
+    channel centreline, so the sum cancels.
+    """
+    G = np.moveaxis(F, axis, 0)
+    sm = 0.25 * G[:-2] + 0.5 * G[1:-1] + 0.25 * G[2:]
+    amp = float(np.abs(G[1:-1] - sm).mean())
+    d = np.diff(G, axis=0); sg = np.sign(d)
+    ch = (sg[1:] != sg[:-1]) & (sg[1:] != 0) & (sg[:-1] != 0)
+    return amp, float(ch.mean())
+
+
 def odd_even(F):
     """Percentage form; NaN when there is no field to normalise against."""
     o, t, _ = odd_even_abs(F)

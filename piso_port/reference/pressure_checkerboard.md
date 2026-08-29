@@ -220,6 +220,58 @@ dt sweep across blocks makes the `Gamma ~ dt` argument starker than the single-b
 
 A 4x refinement in dt makes plain Rhie-Chow ~900x worse; with the transient term it holds flat.
 
+## Skew grids, and the seam bug they exposed
+
+The multi-block gates above all ran on `strip`, which is **Cartesian** -- no cross terms at all.
+Re-running them on a warped channel (walls in y, periodic z, connections in x) immediately broke
+mass conservation: flux divergence went from 3.8e-15 to **1.5e-04**, stalled at that value for 2,
+3 and 5 correctors (so it was a formulation error, not a convergence shortfall), and failed at
+one block too (so it was not a seam *coupling* problem).
+
+The residual was exactly proportional to 1/J (`corr = 1.0000`) -- the signature of a
+compatibility constant being discarded -- and `div(RC)` had volume integral -0.247 instead of
+zero, meaning the term was moving net mass through the boundary.
+
+The cause: the Rhie-Chow **wide** half is `np.gradient` evaluated on the block's own padded
+field, and on a width-1 pad that stencil is **one-sided exactly at the ghost cell a seam face
+needs**. Each block pads from its own neighbour, so the two sides of a seam disagreed --
+measured mismatch **1.084e+02**, against 0.000e+00 for the plain pressure flux. Padding to
+width 2 makes the stencil central at every cell a face touches; the seam mismatch returns to
+**0.000e+00** and divergence to 1.4e-15, better than the baseline.
+
+This was written into the plan as a known caveat and dismissed as "O(h^3), a small
+inconsistency worth remembering". It was not small: it broke mass conservation outright. A
+seam consistency check on the RC term itself would have caught it immediately, and the earlier
+seam test covered `include_cross` but never `rhie_chow=True`.
+
+Warped channel, `rotational`, amplitude and flip fraction (see below on why both are needed):
+
+| blocks | rhie_chow | amp(p) | flip | amp(u) | flip | divF |
+|---|---|---|---|---|---|---|
+| 1 | off | 3.77e-03 | 0.74 | 2.38e-02 | 0.06 | 3.7e-15 |
+| 1 | **on** | **2.32e-04** | **0.28** | 2.41e-02 | 0.09 | 2.7e-15 |
+| 2 | **on** | **2.32e-04** | **0.28** | 2.41e-02 | 0.08 | 2.9e-15 |
+| 4 | **on** | **2.32e-04** | **0.28** | 2.41e-02 | 0.07 | 2.7e-15 |
+
+Identical to four digits across block counts, and |u|max agrees to 2.2e-16.
+
+## Measuring oscillation: neither single number works
+
+Two metrics were tried and both were wrong, in opposite directions.
+
+* The **1-2-1 smoother deviation** also sees smooth CURVATURE. On a parabolic channel profile it
+  reports 1.9e-02 of "oscillation" where only 7% of node pairs actually reverse slope. Every
+  velocity number quoted before this was measuring the profile, not a mode.
+* A **global (-1)^j Fourier projection** is blind to curvature but cancels for a mode whose
+  envelope is antisymmetric about the channel centreline. It reported 1.6e-16 for a field whose
+  slope reverses at 88% of node pairs -- a genuine checkerboard called clean.
+
+`diag_checkerboard.checkerboard()` now returns **(amplitude, flip fraction)**. The flip fraction
+is the detector -- a pure mode flips at every pair, a smooth profile almost never -- and the
+amplitude is only a checkerboard magnitude when the flip fraction is high. On that reading the
+velocity never carried a checkerboard in these cases (flips 0.04-0.09), which is why Rhie-Chow
+leaves it untouched, and the pressure did (flips 0.74-0.98).
+
 ## What this does NOT fix, and what to watch for
 
 * **The plan's central hypothesis was wrong.** Making the flux persistent was argued to be what
