@@ -25,6 +25,7 @@ for node placement: block A stores up to but not including the interface, and bl
 node IS the next node. `Domain.validate()` enforces this rather than leaving it to the caller.
 """
 import numpy as np
+import scipy.sparse as sparse
 
 FACE_NAMES = ("-x", "+x", "-y", "+y", "-z", "+z")
 
@@ -327,3 +328,84 @@ class Domain:
         J, m = _metrics_core(xp, yp, zp, *blk.h)
         sl = tuple(slice(lo[a] or None, -hi[a] if hi[a] else None) for a in range(3))
         return J[sl], {k: v[sl] for k, v in m.items()}
+
+    # ------------------------------------------------------------------ global assembly
+
+    def build_diffusion_matrix(self, Js, metrics_list, coefs=None):
+        """
+        The volume-integrated conservative diffusion operator over the WHOLE domain, as ONE
+        sparse matrix -- PICT's design, and the reason it needs no ghost cells: a connection
+        contributes off-diagonal entries between the two blocks' boundary cells exactly as an
+        interior face does within a block, so the coupling is implicit in the linear solve
+        rather than exchanged between steps.
+
+        Faces are enumerated once each:
+          * interior faces of every block,
+          * one wrap face per PERIODIC axis of a block (joining its own two ends),
+          * one face per CONNECTION, added from the A side only -- adding it from both would
+            double the coupling and quietly halve the effective diffusion across every seam.
+
+        Each face writes the SAME interpolated coefficient into both rows it touches, so the
+        matrix is symmetric by construction, as in the single-block assembler.
+        """
+        N = self.n_cells
+        rows, cols, vals = [], [], []
+        diag = [np.zeros(b.shape) for b in self.blocks]
+
+        def Jg_of(b, axis):
+            m = metrics_list[b]
+            key = ("xi", "eta", "zeta")[axis]
+            g = m[f"{key}_x"] ** 2 + m[f"{key}_y"] ** 2 + m[f"{key}_z"] ** 2
+            c = 1.0 if coefs is None else coefs[b]
+            return c * Js[b] * g
+
+        for b, blk in enumerate(self.blocks):
+            gid = self.global_ids(b)
+            for axis in range(3):
+                h = blk.h[axis]
+                Jg = Jg_of(b, axis)
+                lo_s = [slice(None)] * 3; lo_s[axis] = slice(0, -1)
+                hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
+                cf = 0.5 * (Jg[tuple(lo_s)] + Jg[tuple(hi_s)]) / h ** 2
+                rows += [gid[tuple(lo_s)].ravel(), gid[tuple(hi_s)].ravel()]
+                cols += [gid[tuple(hi_s)].ravel(), gid[tuple(lo_s)].ravel()]
+                vals += [-cf.ravel(), -cf.ravel()]
+                diag[b][tuple(lo_s)] += cf
+                diag[b][tuple(hi_s)] += cf
+
+                if blk.faces[face_id(axis, 1)] == "periodic":
+                    f0 = [slice(None)] * 3; f0[axis] = 0
+                    fn = [slice(None)] * 3; fn[axis] = -1
+                    cw = 0.5 * (Jg[tuple(fn)] + Jg[tuple(f0)]) / h ** 2
+                    a, c_ = gid[tuple(fn)].ravel(), gid[tuple(f0)].ravel()
+                    rows += [a, c_]; cols += [c_, a]
+                    vals += [-cw.ravel(), -cw.ravel()]
+                    diag[b][tuple(fn)] += cw
+                    diag[b][tuple(f0)] += cw
+
+        for c in self.connections:
+            axis, _ = face_axis_side(c.fa)
+            ha = self.blocks[c.ba].h[axis]
+            oaxis, _ = face_axis_side(c.fb)
+            hb = self.blocks[c.bb].h[oaxis]
+            if not np.isclose(ha, hb, rtol=1e-12):
+                raise ValueError(
+                    f"{c}: computational spacing differs across the seam ({ha:.6g} vs "
+                    f"{hb:.6g}). The face coefficient would be ambiguous.")
+            JgA = Jg_of(c.ba, axis)[face_slice(c.fa)]
+            JgB = c.align(Jg_of(c.bb, oaxis)[face_slice(c.fb)])
+            cf = 0.5 * (JgA + JgB) / ha ** 2
+            ga, gb = self.pair_indices(c)
+            rows += [ga, gb]; cols += [gb, ga]
+            vals += [-cf.ravel(), -cf.ravel()]
+            diag[c.ba][face_slice(c.fa)] += cf
+            diag[c.bb][face_slice(c.fb)] += c.unalign(cf)
+
+        for b in range(len(self.blocks)):
+            rows.append(self.global_ids(b).ravel())
+            cols.append(self.global_ids(b).ravel())
+            vals.append(diag[b].ravel())
+
+        return sparse.coo_matrix((np.concatenate(vals),
+                                  (np.concatenate(rows), np.concatenate(cols))),
+                                 shape=(N, N)).tocsr()

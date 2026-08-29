@@ -197,6 +197,61 @@ if __name__ == "__main__":
         check(f"{n_split}-block reassembled metrics satisfy the GCL", gcl < 1e-11,
               f"max |div(uniform field)| = {gcl:.2e} over the reassembled domain")
 
+    print("\n7. SPLIT EQUALS WHOLE for the MATRIX and the SOLVE")
+    # The strongest form yet: assemble the global operator across blocks and SOLVE with it.
+    # A matrix can be right in structure and wrong in the seam coefficients; only a solve
+    # exercises the coupling end to end.
+    import scipy.sparse.linalg as spla
+    from phase3_momentum import build_conservative_diffusion_matrix
+    Mref = build_conservative_diffusion_matrix(NTOT, NY, NZ, hx, hy, hz, Jref, mref,
+                                               periodic=P3)
+    rng2 = np.random.default_rng(7)
+    rhs = rng2.standard_normal(Mref.shape[0]); rhs -= rhs.mean()   # compatible: M is singular
+    free = np.arange(Mref.shape[0])[1:]                            # pin one cell globally
+    pref = np.zeros(Mref.shape[0])
+    pref[free] = spla.cg(Mref[free][:, free].tocsr(), rhs[free], rtol=1e-13, maxiter=20000)[0]
+
+    for n_split in (2, 4):
+        dd = warped_split(n_split)
+        Js, ms = [], []
+        for b in range(n_split):
+            Jb, mb = dd.block_metrics(b)
+            Js.append(Jb); ms.append(mb)
+        M = dd.build_diffusion_matrix(Js, ms)
+        check(f"{n_split}-block global matrix equals the single-block matrix",
+              abs(M - Mref).max() < 1e-12 and M.nnz == Mref.nnz,
+              f"max|M-Mref| {abs(M - Mref).max():.2e}, {M.nnz} nnz vs {Mref.nnz}, "
+              f"asymmetry {abs(M - M.T).max():.1e}")
+
+        p = np.zeros(M.shape[0])
+        p[free] = spla.cg(M[free][:, free].tocsr(), rhs[free], rtol=1e-13, maxiter=20000)[0]
+        check(f"{n_split}-block SOLVE reproduces the single-block solution",
+              np.abs(p - pref).max() < 1e-9,
+              f"max|p - p_single| = {np.abs(p - pref).max():.2e}")
+
+    # The trap named in multiblock_offsets.md: a preconditioner (or an assembly) that ignores
+    # the connections leaves the blocks DECOUPLED. It still solves, still converges, and returns
+    # a confidently wrong field. Demonstrated here so the gate above is known to have teeth.
+    dd = warped_split(4)
+    Js, ms = [], []
+    for b in range(4):
+        Jb, mb = dd.block_metrics(b); Js.append(Jb); ms.append(mb)
+    decoupled = Domain(dd.blocks, [])          # same blocks, connections dropped
+    for blk in decoupled.blocks:               # undo the 'connected' marks
+        for fid in (face_id(0, 0), face_id(0, 1)):
+            blk.faces[fid] = "wall"
+    Md = decoupled.build_diffusion_matrix(Js, ms)
+    pd = np.zeros(Md.shape[0])
+    try:
+        pd[free] = spla.cg(Md[free][:, free].tocsr(), rhs[free], rtol=1e-13, maxiter=20000)[0]
+        err_d = np.abs(pd - pref).max()
+    except Exception:
+        err_d = np.inf
+    check("dropping the connections is caught, not silently tolerated",
+          err_d > 1e-3,
+          f"decoupled solve differs from the true solution by {err_d:.2e} "
+          f"-- it converges happily and is wrong")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

@@ -349,6 +349,28 @@ reassembled domain until a genuinely seam-aware divergence exists.
 coordinates themselves padded along the other connected axis (recursive padding).
 `validate()` reports this rather than silently mis-padding the corners.
 
+### Global assembly and solve: landed and exact
+
+`Domain.build_diffusion_matrix` assembles the conservative diffusion operator over the whole
+domain as **one sparse matrix** — PICT's design, and the reason no ghost cells are needed: a
+connection contributes off-diagonal entries between the two blocks' boundary cells exactly as an
+interior face does within a block, so the coupling is implicit in the linear solve rather than
+exchanged between steps.
+
+| split | vs single-block matrix | nnz | asymmetry | vs single-block **solve** |
+|---|---|---|---|---|
+| 2 blocks | 5.68e-14 | 1344 = 1344 | 0.0 | **3.12e-17** |
+| 4 blocks | 5.68e-14 | 1344 = 1344 | 0.0 | **1.73e-17** |
+
+Faces are enumerated **once each**: interior faces, one wrap per periodic axis, and one face per
+connection added **from the A side only**. Adding it from both ends would double the coupling and
+quietly halve the effective diffusion across every seam.
+
+**The decoupling trap, demonstrated rather than warned about.** Dropping the connections — which
+is what a block-diagonal preconditioner effectively does — leaves the blocks independent. The
+solve still converges, reports no error, and is wrong by **1.3e+16**. `test_multiblock.py`
+includes that case, so the split-equals-whole gate is known to have teeth rather than assumed to.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
