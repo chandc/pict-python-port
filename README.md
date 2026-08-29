@@ -44,7 +44,7 @@ validate each one before moving on.
 | Inviscid energy conservation, central | **1e-16** — exact to round-off |
 | Inviscid energy loss, SOU | **10.35%** of E per turnover on a broadband field |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
-| Automated checks | **182**, all passing |
+| Automated checks | **183**, all passing |
 
 <p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
@@ -110,6 +110,10 @@ turns any gap into a direct measure of the scheme's numerical dissipation:
 Multi-block mesh for flow past a cylinder — a 4-block O-grid, one colour per domain:
 
 <p align="center"><img src="images/cylinder_blocks.png" width="92%"></p>
+
+Armaly backward-facing step — two domains split about the step level, spanwise periodic:
+
+<p align="center"><img src="images/armaly_bfs_grid.png" width="92%"></p>
 
 ---
 
@@ -311,7 +315,8 @@ uv run test_energy_conservation.py         #  6 checks: inviscid KE conservation
 uv run test_multiblock.py                  # 55 checks: seam ops, PISO, 2x2, walls, warped, outflow
 uv run test_obstacle_topology.py           #  8-block vortex-street layout (a mesh with a hole)
 uv run plot_cylinder_blocks.py             #  the 4-block O-grid around a cylinder
-uv run test_multiblock_gradient.py         #  3 checks: FD gradients through a multi-block step
+uv run test_multiblock_gradient.py         #  4 checks: FD gradients, incl. per-cell at a seam
+uv run plot_armaly_bfs.py                  #  Armaly backward-facing step, 2 domains
 uv run test_chan_channel.py                #  4 checks: replicates an independent SEM solver (Chan 1996)
 uv run test_orr_sommerfeld.py              #  2 checks: Orr-Sommerfeld growth at Re=7500
 

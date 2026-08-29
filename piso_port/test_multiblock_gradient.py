@@ -119,6 +119,65 @@ if __name__ == "__main__":
     check("the loss agrees across decompositions", worst < 1e-9,
           f"worst relative difference {worst:.2e}")
 
+    print("\n4. PER-CELL gradients AT A SEAM (the scalar test above cannot see this)")
+    # A scalar body force excites every cell uniformly, so a halved seam contribution would be
+    # diluted across the whole domain and might not show. The bug this gate exists to catch
+    # lives at ONE face: a connection coefficient is 0.5(Jg_A + Jg_B), so dL/dA there must
+    # scatter to BOTH blocks. Perturbing a single cell immediately either side of a seam is the
+    # sharpest probe available, and these are the numbers an adjoint must reproduce cell by cell.
+    def loss_cellwise(pert, n):
+        """pert: dict {(block, i, j, k): delta} added to the x body force."""
+        d = channel_domain(n)
+        m = MultiBlockPISO(d, NU, DT, 2, 1e-13, time_scheme="be", scheme="rotational",
+                           picard_iters=1)
+        src = {b: np.full(d.blocks[b].shape, G0) for b in range(len(d.blocks))}
+        for (b, i, j, k), dv in pert.items():
+            src[b][i, j, k] += dv
+        m.velocity_source = [src, 0.0, 0.0]
+        for _ in range(NSTEP):
+            m.step()
+        return float(sum(np.sum(m.u[b] ** 2 + m.v[b] ** 2 + m.w[b] ** 2)
+                         for b in range(len(d.blocks))))
+
+    def loss_cellwise_single(pert_flat):
+        s = PISOSolver((NX, NY, NZ), warp=1e-9, nu=NU, dt=DT, corrector_steps=2,
+                       periodic=(True, False, True), scheme="rotational", time_scheme="be",
+                       convection="central", boundary_flux_mode="impermeable",
+                       pressure_coef="rowsum", pressure_tol=1e-13, picard_iters=1)
+        src = np.full_like(s.y, G0)
+        for (i, j, k), dv in pert_flat.items():
+            src[i, j, k] += dv
+        s.velocity_source = [src, np.zeros_like(s.y), np.zeros_like(s.y)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(NSTEP):
+                s.step()
+        return float(np.sum(s.u ** 2 + s.v ** 2 + s.w ** 2))
+
+    hc, nsplit = 1e-4, 2
+    nxb = NX // nsplit
+    jj, kk = NY // 2, NZ // 2
+    # the two cells straddling the block-0/block-1 seam, and one deep inside a block
+    probes = [("last cell of block 0 (at the seam)", (0, nxb - 1, jj, kk), (nxb - 1, jj, kk)),
+              ("first cell of block 1 (at the seam)", (1, 0, jj, kk), (nxb, jj, kk)),
+              ("interior cell, far from any seam", (0, 1, jj, kk), (1, jj, kk))]
+    print(f"   {'probe':>36} {'dL/dtheta (2 blocks)':>21} {'single block':>15} {'rel':>9}")
+    ok = True
+    for label, mb_idx, sb_idx in probes:
+        gm = (loss_cellwise({mb_idx: hc}, nsplit) - loss_cellwise({mb_idx: -hc}, nsplit)) / (2 * hc)
+        gs = (loss_cellwise_single({sb_idx: hc}) - loss_cellwise_single({sb_idx: -hc})) / (2 * hc)
+        rel = abs(gm / gs - 1) if gs != 0 else abs(gm - gs)
+        ok &= rel < 1e-5
+        print(f"   {label:>36} {gm:21.10f} {gs:15.6f} {rel:9.1e}")
+    check("per-cell gradients at a seam match the single-block values", ok,
+          "a halved seam contribution would show as a factor-2 error on the two seam probes "
+          "and nowhere else; the interior probe is the control")
+    # HONEST LIMITATION: all three probes return the SAME value here, because this channel is
+    # x-periodic with an x-uniform base flow, so every streamwise station is physically
+    # equivalent. That makes the seam probe weaker than intended -- it confirms the seam is
+    # transparent, but it cannot distinguish a seam-specific error from a uniform one. A flow
+    # with genuine x-variation (the BFS, or a developing inlet) would sharpen it, and is what
+    # this should be re-run on once an adjoint exists to compare against.
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)
