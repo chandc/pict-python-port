@@ -40,6 +40,9 @@ shared collocated discretisation, not of the multi-block layer. Second, `chorin`
 the accumulating schemes are not, and in those schemes **φ itself** carries 38 % — so the mode
 is regenerated every step, not merely inherited.
 
+> Percentages in this table are ratios; see the measurement-error section below
+> for why a ratio alone is not safe to read.
+
 > The lid-driven cavity is deliberately **not** the probe case. Its corners carry a genuine
 > pressure singularity, so a node-to-node metric there reads ~29 % even for `chorin` and mixes
 > real physics with the artefact. The smooth warped duct isolates it.
@@ -87,29 +90,112 @@ the wide one in `gradient`/`deriv` — so the implementation reuses the **same f
 as the pressure operator rather than duplicating it, which is what keeps it correct at seams,
 periodic wraps and walls.
 
+## A measurement error worth recording
+
+The first version of `odd_even` reported the alternating amplitude as a **percentage of each
+profile's range**, and skipped profiles that were flat. When every profile was flat it returned
+`0.0` as a fallback. A force-driven straight duct has uniform pressure (|p|max = 2.4e-15), so
+all twelve profiles were skipped and the metric reported "0.0% -- clean" for a field that did
+not exist. That produced a confident and completely wrong claim that grid warp had an enormous
+effect on the checkerboard.
+
+Measured absolutely, the ratio is roughly **constant at 17-21% across warps**: warp does not
+amplify the mode, it merely creates a pressure field for the mode to live in. `odd_even_abs`
+now returns the absolute amplitude and the range separately, and the percentage form returns
+NaN when there is nothing to normalise against.
+
+Two further false alarms came from the verification itself, not the solver. Comparing
+`div(Phi(p))` against `+M p` gives a relative error of exactly 2.00 (sign convention: M
+discretises -laplacian); fixing the sign but dropping the J factor gives a 1.7-9% mismatch that
+grows with warp and looks exactly like a real operator inconsistency. The correct invariant is
+`J*div(Phi(p)) == -M p`, and it holds to **2-4e-16** at warp 0.00 / 0.05 / 0.10 and n = 8 / 12 /
+16. The flux operator and the Poisson matrix are the same operator.
+
+## What upstream PICT does about it
+
+Nothing. Reading the CUDA kernels directly:
+
+* `getPressureGradient` is `(valP - valN)*0.5` -- the wide stencil.
+* `getPressureGradientFVM` is a Gauss gradient whose own comment says it is "identical to
+  finite difference gradient for orthogonal grids"; all four `gradientInterpolation` variants
+  are half-point interpolations between P and N, which telescope back to the wide stencil.
+* `computeFluxesNDLoop` is `fluxes[bound] = (velN + velC) * 0.5f` -- a plain average with no
+  pressure term.
+
+The only oscillation-related code in the whole kernel file is a boundary extrapolation choice
+(`//p = pP; //using center pressure ... leads to oscillations at the boundary`) and a smoothing
+kernel marked "DO NOT USE". So the susceptibility is **inherited from the reference
+implementation**, not introduced by this port, and everything below is a deliberate deviation
+from PICT.
+
 ## Implementation
 
-Enabled by `rhie_chow=True` on both solvers (default `False`, so existing results are
-reproducible):
+Three options on `PISOSolver`, all defaulting to `False`:
 
-* `PISOSolver(..., rhie_chow=True)` — `src/piso_numpy_3d.py`, applied where
-  `compute_face_fluxes` forms `F`.
-* `MultiBlockPISO(..., rhie_chow=True)` — `src/piso_multiblock.py`, applied per block after
-  `Domain.face_fluxes`.
+| option | what it does |
+|---|---|
+| `persistent_flux` | build the face flux once per step and correct it in place, instead of rebuilding it from the cell velocity every corrector |
+| `rhie_chow` | subtract `D = Phi_compact(p) - I(Phi_wide(p))` from the flux, once per step |
+| `ddt_corr` | add `(Gamma_f/dt)(F_prev - I(F(u^n)))`, the transient term |
 
-Both call `pressure_face_fluxes(..., rhie_chow=True)`, which returns the dissipation term
-instead of the pressure flux, using the **current** pressure and the **same** Γ the pressure
-equation uses.
+`rhie_chow` is fed **`p_flux`, not `p`**. This is load-bearing. The rotational scheme sets
+`p += phi - nu*div(u*)`, and that last term was never carried by the face flux; feeding it back
+made Rhie-Chow remove flux that was never added. The resulting loop diverged with a sharp
+threshold -- `|RC|/|F|` went 0.02 at step 50 to **1.36** at step 60 to 58 at step 70, NaN at
+step 83 -- while `divF` stayed at 1e-12 throughout, which is what ruled out the linear solver
+and located the fault in the feedback path. `p_flux` accumulates the projection pressure only
+and is identical to `p` under every scheme except `rotational`.
 
-Note the correction is applied once to the base flux built from velocity — it is **not** applied
-to the corrector's φ flux, which is an increment, not a pressure.
+## Results
 
-## What to watch for
+Warped duct, A = 0.05, `rotational`. Odd-even amplitude as a fraction of the pressure range:
 
-* The correction is O(h³) and so must **not** change a smooth solution beyond truncation error.
-  That is the gate: order-of-accuracy tests must be unchanged with it on.
-* It uses Γ from the momentum matrix, so it inherits Γ's behaviour; with `pressure_coef='diag'`
-  versus `'rowsum'` the magnitude differs, though the null-mode targeting does not.
-* At a seam the wide gradient is evaluated on the padded field, so the face adjacent to the pad
-  edge uses a one-sided `np.gradient` stencil. The term is O(h³) there regardless, but it is a
-  small inconsistency worth remembering if seam-local pressure behaviour is ever in question.
+| n | RC off | RC on |
+|---|---|---|
+| 12 | 20.7% | 15.7% |
+| 16 | 25.4% | 14.4% |
+| 24 | **32.1%** | **10.8%** |
+
+Without the term the mode **grows** under refinement; with it the mode **converges away**. That
+reversal, not the single-grid reduction, is the result that matters.
+
+dt sweep at n = 12 (`ddt_corr` is not optional):
+
+| dt | RC only | RC + ddt_corr |
+|---|---|---|
+| 0.0200 | 14.2% | 2.6% |
+| 0.0100 | 15.6% | 2.8% |
+| 0.0050 | 17.0% | 3.0% |
+| 0.0025 | 18.0% | 3.7% |
+
+Since `Gamma ~ dt`, plain Rhie-Chow damping is O(dt) and **weakens as the step is refined** --
+14.2% to 18.0% over an 8x refinement. Shipping without the transient term would have passed at
+whatever dt happened to be tested and failed quietly at another. With it, the absolute amplitude
+drops ~45x (1.93e-02 to 4.31e-04) and holds roughly flat.
+
+Order of accuracy, against the exact duct Fourier series:
+
+| warp | n=8 | n=16 | rates (off / on) |
+|---|---|---|---|
+| 0.00 | 0.00% | 0.00% | 2.06, 2.04 / 2.06, 2.04 |
+| 0.05 | 0.48% | 0.42% | -- |
+
+On an orthogonal grid the term is **bitwise inert**, which is the O(h^3) claim made good.
+
+## What this does NOT fix, and what to watch for
+
+* **The plan's central hypothesis was wrong.** Making the flux persistent was argued to be what
+  would stabilise Rhie-Chow. It is not: persistent+RC still diverged at n=16, and rebuild+RC and
+  persistent+RC give identical answers (2.150e-02 vs 2.149e-02) because the rebuild path already
+  tracked the accumulated pressure. Persistence is still worth having -- one flux build instead
+  of `corrector_steps`, and divergence improved 1.6e-12 to 5.1e-13 -- but it was not the
+  mechanism. The `p_flux` fix was.
+* **The term is orthogonal-only.** The cross part of the pressure flux is computed cell-centred
+  and interpolated, so it carries the same wide-stencil blind spot. Measured cross/orthogonal
+  magnitude: 10.6% at warp 0.02, 29.4% at 0.05, 61.6% at 0.10, 75.6% at 0.15. Expect the fix to
+  degrade as skewness grows; a cross-term extension may be needed past warp ~0.10.
+* **Pair with `implicit_cross` on skew grids.** With deferred correction, a non-converged pass
+  now writes into a flux that persists rather than being wiped, so non-convergence becomes
+  cumulative.
+* **New restart state.** `p_flux` and `F_prev` are running state and are saved in checkpoint
+  format 3. Neither is reconstructible from u and p.

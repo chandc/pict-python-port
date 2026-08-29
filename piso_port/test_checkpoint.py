@@ -39,6 +39,11 @@ def single(**kw):
     return s
 
 
+def single_rc(**kw):
+    """Rhie-Chow on: adds p_flux and F_prev to the running state."""
+    return single(rhie_chow=True, persistent_flux=True, ddt_corr=True, **kw)
+
+
 def multi(nb=2, **kw):
     s = MultiBlockPISO(strip(nb), 0.05, 0.02, 2, 1e-12, time_scheme='bdf2',
                        scheme='rotational', picard_iters=2, **kw)
@@ -80,7 +85,9 @@ if __name__ == "__main__":
     print(__doc__.strip().split("\n\n")[0])
 
     print("\nExact restart (a save/restore must be invisible in the answer)")
-    for name, make in (("single block", single), ("multi-block, 2 domains", multi),
+    for name, make in (("single block", single),
+                       ("single block, rhie_chow", single_rc),
+                       ("multi-block, 2 domains", multi),
                        ("multi-block, 4 domains", lambda: multi(4))):
         err, meta, c = split_run(make)
         check(err < 1e-12, f"{name}: restart reproduces the uninterrupted run "
@@ -98,6 +105,12 @@ if __name__ == "__main__":
     err_mb, _, _ = split_run(multi, mangle=lambda s: setattr(s, "u_prev", None))
     check(err_mb > 1e-8, f"multi-block: dropping u_prev is detected too "
                          f"(max|diff| = {err_mb:.2e})")
+    err_fp, _, _ = split_run(single_rc, mangle=lambda s: setattr(s, "F_prev", None))
+    check(err_fp > 1e-12, f"rhie_chow: dropping F_prev loses a step of ddt_corr damping "
+                          f"and the test detects it (max|diff| = {err_fp:.2e})")
+    err_pf, _, _ = split_run(single_rc, mangle=lambda s: s.p_flux.fill(0.0))
+    check(err_pf > 1e-12, f"rhie_chow: dropping p_flux is detected "
+                          f"(max|diff| = {err_pf:.2e})")
 
     print("\nRefusing a restart that is not a continuation")
     with tempfile.TemporaryDirectory() as td:

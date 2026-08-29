@@ -11,6 +11,11 @@ are easy to get wrong:
   * The pressure must be saved. The incremental and rotational schemes carry p forward as a
     running total; a restart from p = 0 re-derives it over several steps and perturbs the
     velocity meanwhile.
+  * With Rhie-Chow enabled there are two MORE pieces of running state: p_flux, the projection
+    pressure the face flux actually carries (it differs from p under the rotational scheme),
+    and F_prev, the previous step's face flux that ddt_corr re-injects. Neither is
+    reconstructible from u and p, so a restart without them silently loses the checkerboard
+    damping for a step and then limps back.
 
 Restarting into a solver configured differently from the one that wrote the file (different nu,
 dt, time scheme, or grid) is refused rather than silently accepted, because the resulting run
@@ -21,12 +26,12 @@ read for post-processing without constructing a solver at all -- see load_fields
 """
 import numpy as np
 
-FORMAT = 2                      # bump when the on-disk layout changes incompatibly
+FORMAT = 3                      # bump when the on-disk layout changes incompatibly
 FIELDS = ("u", "v", "w", "p")
 # Config that changes the meaning of the state. A restart that disagrees on any of these is
 # not a continuation of the same simulation.
 CONFIG = ("nu", "dt", "time_scheme", "scheme", "picard_iters", "corrector_steps",
-          "implicit_cross")
+          "implicit_cross", "rhie_chow", "persistent_flux", "ddt_corr")
 
 
 def _is_multiblock(s):
@@ -65,6 +70,20 @@ def save(solver, path, **extra):
             part = part if isinstance(part, dict) else {0: part}
             for b, arr in part.items():
                 out[f"prev{f}_{b}"] = np.asarray(arr)
+
+    # Rhie-Chow running state (absent unless the option is on)
+    pf = getattr(solver, "p_flux", None)
+    if pf is not None:
+        part = pf if isinstance(pf, dict) else {0: pf}
+        for b, arr in part.items():
+            out[f"pflux_{b}"] = np.asarray(arr)
+    Fp = getattr(solver, "F_prev", None)
+    out["has_Fprev"] = np.array(Fp is not None)
+    if Fp is not None:
+        per_block = Fp if isinstance(Fp, dict) else {0: Fp}
+        for b, axes in per_block.items():
+            for a, arr in enumerate(axes):
+                out[f"Fprev_{b}_{a}"] = np.asarray(arr)
 
     for k, v in extra.items():
         out[f"x_{k}"] = np.asarray(v)
@@ -133,6 +152,21 @@ def load(solver, path, strict=True):
         solver.u_prev = tuple(parts)
     else:
         solver.u_prev = None
+
+    if f"pflux_0" in d.files:
+        per = {b: d[f"pflux_{b}"].copy() for b in range(meta["nblocks"])
+               if f"pflux_{b}" in d.files}
+        solver.p_flux = per if mb else per[0]
+    if bool(d["has_Fprev"]) if "has_Fprev" in d.files else False:
+        per = {}
+        for b in range(meta["nblocks"]):
+            axes = [d[f"Fprev_{b}_{a}"].copy() for a in range(3)
+                    if f"Fprev_{b}_{a}" in d.files]
+            if axes:
+                per[b] = axes
+        solver.F_prev = per if mb else per.get(0)
+    else:
+        solver.F_prev = None
 
     solver.nstep, solver.time = meta["nstep"], meta["time"]
     return meta

@@ -45,7 +45,8 @@ class PISOSolver:
                  boundary_flux_mode='from_velocity', periodic=None,
                  scheme='chorin', time_scheme='be', convection='sou',
                  pressure_coef='auto', picard_iters=1, implicit_cross=False,
-                 outflow=None, rhie_chow=False):
+                 outflow=None, rhie_chow=False, persistent_flux=False,
+                 ddt_corr=False):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -110,6 +111,9 @@ class PISOSolver:
         # implicit operator is the symmetric orthogonal part alone.)
         self.implicit_cross = implicit_cross
         self.rhie_chow = rhie_chow
+        self.persistent_flux = persistent_flux
+        self.ddt_corr = ddt_corr
+        self.F_prev = None          # previous step's face flux, for ddt_corr
         # Inflow/outflow faces (see outflow.py). Outflow is NOT a new solver mode: the outlet
         # stays a Dirichlet velocity boundary whose value is updated each step, which is how
         # PICT does it. What differs between the two kinds is the PRESSURE system -- a Dong
@@ -146,6 +150,9 @@ class PISOSolver:
         self.v = np.zeros(ns)
         self.w = np.zeros(ns)
         self.p = np.zeros(ns)
+        # the projection pressure -- what the face flux actually carries. Equal to
+        # self.p except under 'rotational', which adds a term the flux never saw.
+        self.p_flux = np.zeros(ns)
 
         # Dirichlet velocity boundary values (default: all walls at rest)
         # Optional body force (3 arrays), added to the momentum RHS. This is PICT's
@@ -435,6 +442,35 @@ class PISOSolver:
         return p, correct_fluxes(F, Phi)
 
     # ------------------------------------------------------------------ step
+
+    def _face_interp(self, cell):
+        """A cell field on the face layout used by the fluxes (shape[axis]+1 along axis).
+
+        Interior faces take 0.5*(c[lo] + c[hi]); a periodic axis wraps; a true domain
+        boundary face takes the adjacent cell's value. This mirrors the face averaging in
+        pressure_face_fluxes so the transient term is weighted exactly like the pressure
+        term it is meant to keep alive.
+        """
+        out = []
+        for axis in range(3):
+            shape = list(cell.shape); shape[axis] += 1
+            f = np.zeros(shape)
+            lo = [slice(None)]*3; lo[axis] = slice(0, -1)
+            hi = [slice(None)]*3; hi[axis] = slice(1, None)
+            mid = [slice(None)]*3; mid[axis] = slice(1, -1)
+            f[tuple(mid)] = 0.5*(cell[tuple(lo)] + cell[tuple(hi)])
+            a0 = [slice(None)]*3; a0[axis] = 0
+            an = [slice(None)]*3; an[axis] = -1
+            fn = [slice(None)]*3; fn[axis] = -1
+            if self.per[axis]:
+                w = 0.5*(cell[tuple(an)] + cell[tuple(a0)])
+                f[tuple(a0)] = w; f[tuple(fn)] = w
+            else:
+                f[tuple(a0)] = cell[tuple(a0)]
+                f[tuple(fn)] = cell[tuple(an)]
+            out.append(f)
+        return out
+
     def step(self):
         """Advance one step and advance the clock (see _step_impl for the Picard loop)."""
         out = self._step_impl()
@@ -503,22 +539,38 @@ class PISOSolver:
         # CopyPressureResultToBlocks replaces the pressure field each corrector.
         phi_total = np.zeros_like(J)
         div_star = None
+        F = None
         for c in range(self.corrector_steps):
-            F = compute_face_fluxes(us, vs, ws, J, self.metrics,
-                                    boundary=self.boundary_flux_mode, periodic=self.per)
-            if self.rhie_chow:
-                # The predictor's WIDE pressure gradient cannot feel a node-to-node mode in p,
-                # and this face flux -- a plain average of cell velocities -- cannot move mass
-                # in response to one. Without this term nothing damps the mode, and the
-                # incremental/rotational schemes accumulate it step after step.
-                # p + phi_total, NOT self.p: the corrector rebuilds F from the velocity it
-                # has ALREADY corrected, so the term must carry the pressure accumulated so
-                # far in this step. Using self.p re-applies the same correction every
-                # corrector pass, which diverges (NaN within ~100 steps even on warp=0).
-                rc = pressure_face_fluxes(self.p + phi_total, J, self.metrics, self.h,
-                                          coef=coef, include_cross=False,
-                                          periodic=self.per, rhie_chow=True)
-                F = [F[a] - rc[a] for a in range(3)]
+            # PERSISTENT FLUX (Phase A). _solve_pressure returns a CORRECTED F, but rebuilding
+            # it here from the cell velocity throws that correction away at the top of every
+            # pass -- and the cell velocity was corrected with the WIDE gradient, which
+            # annihilates the node-to-node mode. So the compact pressure information the
+            # corrector just wrote never survives, and nothing damps the checkerboard.
+            # OpenFOAM keeps `phi` as a stored face field for exactly this reason.
+            if F is None or not self.persistent_flux:
+                F = compute_face_fluxes(us, vs, ws, J, self.metrics,
+                                        boundary=self.boundary_flux_mode, periodic=self.per)
+                if self.rhie_chow:
+                    # With a persistent flux this is applied ONCE per step, against p^n.
+                    # On the rebuild path it has to track the pressure accumulated so far,
+                    # or the same correction is re-applied every pass (NaN in ~100 steps).
+                    p_ref = self.p_flux if self.persistent_flux \
+                        else self.p_flux + phi_total
+                    rc = pressure_face_fluxes(p_ref, J, self.metrics, self.h,
+                                              coef=coef, include_cross=False,
+                                              periodic=self.per, rhie_chow=True)
+                    F = [F[a] - rc[a] for a in range(3)]
+                    if self.ddt_corr and self.F_prev is not None:
+                        # Gamma ~ dt, so the Rhie-Chow term above is O(dt) and its damping
+                        # VANISHES as dt -> 0 -- the checkerboard would come back for small
+                        # steps. This re-injects the face/cell inconsistency the previous
+                        # step established, which is itself O(Gamma), so the ratio (and the
+                        # damping) is dt-independent. OpenFOAM's fvc::ddtCorr(U, phi).
+                        Fold = compute_face_fluxes(self.u, self.v, self.w, J, self.metrics,
+                                                   boundary=self.boundary_flux_mode,
+                                                   periodic=self.per)
+                        cf = self._face_interp(coef / self.dt)
+                        F = [F[a] + cf[a]*(self.F_prev[a] - Fold[a]) for a in range(3)]
             if c == 0:
                 # divergence of the PREDICTOR field -- exactly what the rotational term needs
                 div_star = divergence_from_fluxes(F, J, self.h)
@@ -533,6 +585,10 @@ class PISOSolver:
                 f[self.bmask] = bc[self.bmask]
             phi_total += pp
 
+        # the projection pressure -- what the face flux actually carries. Identical to
+        # self.p except under 'rotational', which adds a term the flux never saw.
+        self.p_flux = phi_total if self.scheme == "chorin" else self.p_flux + phi_total
+
         if self.scheme == "chorin":
             self.p = phi_total                       # recomputed, never accumulated
         elif self.scheme == "incremental":
@@ -546,5 +602,6 @@ class PISOSolver:
 
         self.u_prev = (self.u.copy(), self.v.copy(), self.w.copy())
         self.u, self.v, self.w = us, vs, ws
+        self.F_prev = [f.copy() for f in F]      # carried into the next step
         self.last_flux_divergence = divergence_from_fluxes(F, J, self.h)
         return np.abs(self.last_flux_divergence).max()
