@@ -528,6 +528,31 @@ have refused the topology outright.
 > confirmed failing (4 validate problems, and `block_metrics` raising on the extent mismatch).
 > A gate written after the fix only proves the fix runs.
 
+### Walls: the face-type registry consumed
+
+`Domain.wall_mask()` marks every node on a face that is **neither periodic nor connected**, and
+`MultiBlockPISO` applies Dirichlet elimination on those rows of the global matrix — the same
+treatment `phase4_poisson.py` uses single-block. Wall values are re-imposed after each pressure
+correction.
+
+Per-**face** typing is the point: one block's `+x` may be a wall while its neighbour's `+x` is a
+connection, which per-*axis* periodicity flags cannot express. That is the whole reason real
+geometry needs the registry.
+
+Verified on a channel — no-slip walls in $y$, periodic in $z$, **connections in $x$**, so walls
+and seams are exercised together:
+
+| split | vs single block | wall nodes |
+|---|---|---|
+| 2 blocks | **6.84e-10** | 64 of 288 |
+| 4 blocks | **6.84e-10** | 64 of 288 |
+
+**A body force had to be added at the same time.** Without `velocity_source` a periodic channel
+has nothing driving it and the velocity stays identically zero. The first wall test reported
+`max|u - u_single| = 0.60`, exactly `max|u|` — the multi-block field was zero, and the omission
+looked like a solver failure. There is now a gate asserting that a *forceless* channel stays at
+rest, so the zero field is pinned as correct physics rather than mistaken for a bug again.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

@@ -609,6 +609,63 @@ if __name__ == "__main__":
     check("2x2 seam divergence equals the single-block divergence", ferr < 1e-13,
           f"max |div - single| = {ferr:.2e}")
 
+    print("\n15. WALLS: the face-type registry consumed (channel = walls + connections)")
+    # A face is a wall only if it is neither periodic nor connected, so one block's '+x' can be
+    # a wall while its neighbour's is a connection. That is why the type must live per FACE
+    # rather than per axis, and it is what any real geometry needs.
+    NXc, NYc, NZc, NUc, DTc, Gc = 8, 9, 4, 0.1, 0.05, 0.8
+    sref2 = PISOSolver((NXc, NYc, NZc), warp=1e-9, nu=NUc, dt=DTc, corrector_steps=2,
+                       periodic=(True, False, True), scheme="chorin", time_scheme="be",
+                       convection="central", boundary_flux_mode="impermeable",
+                       pressure_coef="rowsum", pressure_tol=1e-13, picard_iters=1)
+    sref2.velocity_source = [np.full_like(sref2.y, Gc), np.zeros_like(sref2.y),
+                             np.zeros_like(sref2.y)]
+    with _cl.redirect_stdout(_io.StringIO()):
+        for _ in range(20):
+            dsing = sref2.step()
+
+    def channel(n):
+        nxb = NXc // n
+        xi1 = np.arange(NXc) / NXc
+        eta1 = np.linspace(0, 1, NYc)
+        ze1 = np.arange(NZc) / NZc
+        Xc, Yc, Zc = np.meshgrid(xi1, eta1, ze1, indexing="ij")
+        bl = []
+        for b in range(n):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NYc, NZc), Xc[sl], Yc[sl], Zc[sl],
+                        (1.0 / NXc, 1.0 / (NYc - 1), 1.0 / NZc))
+            blk.faces[face_id(1, 0)] = blk.faces[face_id(1, 1)] = "wall"
+            blk.faces[face_id(2, 0)] = blk.faces[face_id(2, 1)] = "periodic"
+            bl.append(blk)
+        return Domain(bl, [Connection(b, face_id(0, 1), (b + 1) % n, face_id(0, 0),
+                                      shift=(1.0, 0, 0) if (b + 1) % n == 0 else (0, 0, 0))
+                           for b in range(n)])
+
+    for n_split in (2, 4):
+        dc = channel(n_split)
+        nwall = dc.wall_mask().sum()
+        m = MultiBlockPISO(dc, NUc, DTc, 2, 1e-13, time_scheme="be", scheme="chorin",
+                           picard_iters=1)
+        m.velocity_source = [Gc, 0.0, 0.0]
+        for _ in range(20):
+            dmv = m.step()
+        ue = np.concatenate([m.u[b] for b in range(n_split)], axis=0)
+        check(f"{n_split}-block channel with WALLS matches the single-block solver",
+              np.abs(ue - sref2.u).max() < 1e-8,
+              f"max|u - u_single| = {np.abs(ue - sref2.u).max():.2e} after 20 steps; "
+              f"{nwall} wall nodes of {dc.n_cells}; flux divergence {dmv:.1e}")
+
+    # a body force is needed or the periodic channel has nothing driving it
+    dc = channel(2)
+    m = MultiBlockPISO(dc, NUc, DTc, 2, 1e-13, time_scheme="be", scheme="chorin",
+                       picard_iters=1)
+    for _ in range(5):
+        m.step()
+    quiet = max(np.abs(m.u[b]).max() for b in range(2))
+    check("without a body force the channel stays at rest, as it should", quiet < 1e-14,
+          f"max|u| = {quiet:.1e} -- a zero field here is correct physics, not a solver failure")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

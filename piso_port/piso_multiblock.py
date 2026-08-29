@@ -14,7 +14,8 @@ the three things that go wrong in it are all global-vs-local mistakes:
   * THE GRADIENT AND FLUXES MUST CROSS SEAMS. Using the block-local operators here would treat
     every connection as a wall.
 
-SCOPE: fully periodic, Cartesian, central convection, chorin; BDF2 in time (BE on the
+SCOPE: Cartesian, central convection; periodic OR no-slip walls (the face-type
+registry is consumed via Domain.wall_mask); BDF2 in time (BE on the
 first step, which has no previous level). That is deliberate -- it is the
 configuration where the multi-block result can be compared against the single-block solver
 EXACTLY, with no cross terms (Cartesian) and no boundary conditions (periodic) to confound it.
@@ -53,6 +54,19 @@ class MultiBlockPISO:
         self.v = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
         self.w = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
         self.p = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
+        # Dirichlet velocity on wall faces. Default zero = no-slip; set per block to drive a lid
+        # or an inlet. Walls are found from the face-type registry, so a block whose '+x' is a
+        # wall and whose neighbour's '+x' is a connection is handled correctly.
+        self.u_bc = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
+        self.v_bc = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
+        self.w_bc = {b: np.zeros(bl.shape) for b, bl in enumerate(domain.blocks)}
+        # Optional body force, PICT's `velocitySource`: a list of three per-block dicts (or
+        # scalars). Without it a periodic channel has nothing to drive it and the velocity stays
+        # identically zero -- which looks like a solver failure and is not one.
+        self.velocity_source = None
+        self.wall = domain.wall_mask()
+        self.interior = np.where(~self.wall)[0]
+        self.bnd = np.where(self.wall)[0]
 
     # ---- helpers ---------------------------------------------------------------
     def _flat(self, fields):
@@ -102,8 +116,13 @@ class MultiBlockPISO:
             gp = None
 
         # --- momentum predictor, all three components on the GLOBAL matrix
+        has_wall = self.bnd.size > 0
+        if has_wall:
+            A_ii = A[self.interior][:, self.interior].tocsr()
+            A_ib = A[self.interior][:, self.bnd].tocsr()
         star = []
-        for k, comp in enumerate((self.u, self.v, self.w)):
+        for k, (comp, bcs) in enumerate(((self.u, self.u_bc), (self.v, self.v_bc),
+                                         (self.w, self.w_bc))):
             phi_n = self._flat(comp)
             if bdf2:
                 # J (2 u^n - u^{n-1}/2) / dt, against the 3J/2dt on the diagonal
@@ -112,8 +131,20 @@ class MultiBlockPISO:
                 trans = phi_n / self.dt
             # incremental/rotational carry the OLD pressure gradient into the predictor
             # (PICT's applyPressureGradient=True); chorin does not.
-            rhs = Jg * (trans - gp[k]) if gp is not None else Jg * trans
-            x, info = spla.bicgstab(A, rhs, x0=phi_n, rtol=self.tol, maxiter=20000)
+            src = 0.0
+            if self.velocity_source is not None:
+                sk = self.velocity_source[k]
+                src = sk if np.isscalar(sk) else self._flat(sk)
+            rhs = Jg * (trans - (gp[k] if gp is not None else 0.0) + src)
+            if has_wall:
+                # Dirichlet elimination, as the single-block solver does: solve only for the
+                # interior and move the known wall values across to the RHS.
+                phi_b = self._flat(bcs)[self.bnd]
+                xi, info = spla.bicgstab(A_ii, rhs[self.interior] - A_ib @ phi_b,
+                                         x0=phi_n[self.interior], rtol=self.tol, maxiter=20000)
+                x = np.zeros(A.shape[0]); x[self.interior] = xi; x[self.bnd] = phi_b
+            else:
+                x, info = spla.bicgstab(A, rhs, x0=phi_n, rtol=self.tol, maxiter=20000)
             star.append(self._unflat(x))
         us, vs, ws = star
 
@@ -153,6 +184,13 @@ class MultiBlockPISO:
                 us[b] = us[b] - coef[b] * gx
                 vs[b] = vs[b] - coef[b] * gy
                 ws[b] = ws[b] - coef[b] * gz
+            if has_wall:                                   # re-impose the wall values
+                for arr, bc in ((us, self.u_bc), (vs, self.v_bc), (ws, self.w_bc)):
+                    fl = self._flat(arr); fl[self.bnd] = self._flat(bc)[self.bnd]
+                    upd = self._unflat(fl)
+                    for b in range(nb):
+                        arr[b] = upd[b]
+            for b in range(nb):
                 Phi = d.pressure_face_fluxes(b, pp, coef[b], coef)
                 Fb[b] = [Fb[b][a] - Phi[a] for a in range(3)]
                 phi_tot[b] = phi_tot[b] + pp[b]

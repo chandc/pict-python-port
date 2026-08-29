@@ -791,3 +791,20 @@ class Domain:
             lay = lay[::-1]
         return np.stack([to_mine(l) for l in lay])
 
+    def wall_mask(self):
+        """
+        Global boolean mask marking every node that lies on a WALL face.
+
+        This is the face-type registry finally being consumed. A face is a wall only if it is
+        neither periodic nor connected: one block's '+x' may be a wall while its neighbour's is
+        a connection, which is exactly why the type has to be per FACE rather than per axis.
+        A corner node shared by two wall faces is marked once.
+        """
+        m = np.zeros(self.n_cells, dtype=bool)
+        for b, blk in enumerate(self.blocks):
+            gid = self.global_ids(b)
+            for fid, kind in enumerate(blk.faces):
+                if kind in ("periodic", "connected"):
+                    continue
+                m[gid[face_slice(fid)].ravel()] = True
+        return m
