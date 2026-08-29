@@ -1,0 +1,9 @@
+  GATE A -- persistent flux alone (no Rhie-Chow yet).
+  Expect: divergence still ~1e-13; velocity DRIFTS vs today (that is the known
+  Phase-A-alone behaviour); checkerboard roughly unchanged.
+
+   persistent  rhie_chow       divF   odd-even    ratio  DCwarn  finite
+        False      False    1.6e-12  3.170e-02    20.6%       0    True
+         True      False    5.1e-13  3.171e-02    20.6%       0    True
+
+  max|u_persistent - u_rebuild| = 1.062e-04  (0.009% of |u|max)

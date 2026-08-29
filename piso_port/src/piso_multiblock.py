@@ -294,7 +294,21 @@ class MultiBlockPISO:
                             Fold = d.face_fluxes(b, self.u, self.v, self.w)
                             cf = d.face_interp(b, {bb: coef[bb] / self.dt
                                                    for bb in range(nb)})
-                            corr = [cf[a] * (self.F_prev[b][a] - Fold[a]) for a in range(3)]
+                            # OpenFOAM's fvcDdtPhiCoeff, and NOT optional. With SIMPLEC
+                            # (Gamma = J/rowsum(A)) and CONSERVATIVE central convection and
+                            # diffusion -- both zero row sum -- rowsum(A) = J/dt exactly, so
+                            # Gamma/dt is 1.0 to machine precision and the F_prev recurrence
+                            # has unit gain. Any inconsistency then grows without bound: the
+                            # backward-facing step diverged at step 439 with the raw form.
+                            # The limiter goes to 0 exactly where the face flux and the
+                            # interpolated cell flux disagree most, which is where the raw
+                            # term is least trustworthy.
+                            corr = []
+                            for a in range(3):
+                                dF = self.F_prev[b][a] - Fold[a]
+                                lim = 1.0 - np.minimum(
+                                    np.abs(dF) / (np.abs(self.F_prev[b][a]) + 1e-30), 1.0)
+                                corr.append(lim * cf[a] * dF)
                             # A domain boundary face carries a PRESCRIBED flux -- a wall's
                             # zero, an inflow's profile, an outflow's balanced value. The
                             # transient term must not touch it, or it injects mass the

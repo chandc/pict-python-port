@@ -1,0 +1,7 @@
+  Attribution: does rhie_chow CAUSE the non-contraction, or is it there anyway?
+
+     n  rhie_chow  DC warnings  converged?
+    12      False            0        True
+    12       True            0        True
+    16      False            0        True
+    16       True            0        True

@@ -1,0 +1,9 @@
+  Does divF fall with more correctors (convergence) or stall (formulation)?
+
+   correctors  implicit_cross       divF
+            2           False   3.64e-06
+            3           False   3.64e-06
+            5           False   3.64e-06
+            2            True   3.74e-06
+            3            True   3.74e-06
+            5            True   3.74e-06

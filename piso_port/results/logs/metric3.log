@@ -1,0 +1,12 @@
+  Three metrics on the same fields. They disagree, and the disagreement matters:
+    1-2-1 : deviation from a 1-2-1 smoother -- also sees smooth CURVATURE
+    nyq   : true (-1)^j Fourier coefficient -- blind to smooth structure
+    flips : fraction of consecutive pairs where the slope reverses (1.00 = pure)
+
+                        case  field      1-2-1        nyq   flips
+                  BFS Re=100      u  1.575e-02  1.151e-02    0.98
+                  BFS Re=100      u  9.085e-03  2.961e-04    0.04
+           cartesian channel      p  1.259e-12  9.616e-13    0.97
+           cartesian channel      u  1.940e-02  2.829e-11    0.07
+         skew channel A=0.06      p  2.183e-02  1.639e-16    0.88
+         skew channel A=0.06      u  1.903e-02  3.816e-17    0.05

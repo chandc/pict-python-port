@@ -1,0 +1,12 @@
+  steady divF = 3.640e-06
+
+  Structure of the residual divergence:
+    max|res|         = 3.640e-06
+    mean(res)        = 3.100e-06
+    std(res)/mean    = 0.064   (0 = uniform -> a compatibility constant)
+    corr(res, 1/J)   = 1.0000   (1 = residual ~ 1/J, the signature of removing an arithmetic mean)
+    volume integral  = 2.371e-03   (must be ~0 for a well-posed Neumann solve)
+
+  The RC term's own divergence (should integrate to ~0 if it is a pure flux):
+    max|div(RC)|     = 5.743e+00
+    volume integral  = -2.467e-01

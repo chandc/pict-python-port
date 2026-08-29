@@ -570,7 +570,16 @@ class PISOSolver:
                                                    boundary=self.boundary_flux_mode,
                                                    periodic=self.per)
                         cf = self._face_interp(coef / self.dt)
-                        F = [F[a] + cf[a]*(self.F_prev[a] - Fold[a]) for a in range(3)]
+                        # see the multi-block note: Gamma/dt is exactly 1 under SIMPLEC with
+                        # conservative operators, so the recurrence has unit gain without
+                        # this limiter (OpenFOAM's fvcDdtPhiCoeff).
+                        out = []
+                        for a in range(3):
+                            dF = self.F_prev[a] - Fold[a]
+                            lim = 1.0 - np.minimum(
+                                np.abs(dF) / (np.abs(self.F_prev[a]) + 1e-30), 1.0)
+                            out.append(F[a] + lim * cf[a] * dF)
+                        F = out
             if c == 0:
                 # divergence of the PREDICTOR field -- exactly what the rotational term needs
                 div_star = divergence_from_fluxes(F, J, self.h)

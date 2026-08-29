@@ -1,0 +1,16 @@
+  GATE D1 -- persistent flux + Rhie-Chow across blocks.
+
+   blocks  persist  rhie_chow   odd-even    ratio      divF  died@
+        1    False      False  1.261e-02    24.0%   1.5e-13      0
+        1     True      False  1.333e-05    22.5%   2.8e-15      0
+        1     True       True  1.431e-11    20.3%   2.7e-15      0
+        2    False      False  9.495e-03    24.0%   1.1e-13      0
+        2     True      False  3.362e-05    22.5%   2.7e-15      0
+        2     True       True  1.342e-12    16.1%   3.1e-15      0
+        4    False      False  3.041e-03    24.0%   3.6e-14      0
+        4     True      False  1.919e-07    22.5%   2.6e-15      0
+        4     True       True  8.464e-12    17.6%   2.7e-15      0
+
+  Block-count independence (the multi-block invariant) with the full fix:
+    2 blocks vs 1: max|u_n - u_1| = 2.074e-10
+    4 blocks vs 1: max|u_n - u_1| = 3.781e-10

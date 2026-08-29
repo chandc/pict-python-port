@@ -1,0 +1,63 @@
+Rhie-Chow gates: oscillations in BOTH velocity and pressure, on Cartesian AND skew grids,
+single-block and multi-block.
+
+SINGLE BLOCK -- oscillation amplitude in p and u, Cartesian vs skew
+
+          grid  rhie_chow     amp(p)  flip     amp(u)  flip      divF
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+     cartesian      False  9.484e-13  0.97  1.304e-02  0.07   3.5e-15
+  [PASS] cartesian, rhie_chow=False: stayed finite
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+  warning: momentum BiCGStab info=-10
+     cartesian       True  1.296e-14  0.96  1.304e-02  0.07   2.1e-15
+  [PASS] cartesian, rhie_chow=True: stayed finite
+  [PASS] cartesian: pressure oscillation not made worse (9.48e-13 -> 1.30e-14)
+  [PASS] cartesian: velocity oscillation not made worse (1.30e-02 -> 1.30e-02)
+   skew A=0.06      False  1.067e-02  0.88  1.246e-02  0.05   1.0e-12
+  [PASS] skew A=0.06, rhie_chow=False: stayed finite
+   skew A=0.06       True  1.675e-04  0.21  1.272e-02  0.04   7.5e-13
+  [PASS] skew A=0.06, rhie_chow=True: stayed finite
+  [PASS] skew A=0.06: pressure oscillation not made worse (1.07e-02 -> 1.68e-04)
+  [PASS] skew A=0.06: velocity oscillation not made worse (1.25e-02 -> 1.27e-02)
+
+MULTI-BLOCK ON A SKEW GRID -- the case the earlier gates never covered
+
+   blocks  rhie_chow     amp(p)  flip     amp(u)  flip      divF
+        1      False  3.770e-03  0.74  2.380e-02  0.06   3.7e-15
+  [PASS] skew, 1 block(s), rhie_chow=False: stayed finite
+  [PASS] skew, 1 block(s), rhie_chow=False: flux divergence 3.7e-15 < 1e-10
+        1       True  2.316e-04  0.28  2.405e-02  0.09   2.7e-15
+  [PASS] skew, 1 block(s), rhie_chow=True: stayed finite
+  [PASS] skew, 1 block(s), rhie_chow=True: flux divergence 2.7e-15 < 1e-10
+  [PASS] skew, 1 block(s): pressure oscillation not made worse (3.77e-03 -> 2.32e-04)
+  [PASS] skew, 1 block(s): velocity oscillation not made worse (2.38e-02 -> 2.40e-02)
+        2      False  3.770e-03  0.74  2.380e-02  0.08   3.8e-15
+  [PASS] skew, 2 block(s), rhie_chow=False: stayed finite
+  [PASS] skew, 2 block(s), rhie_chow=False: flux divergence 3.8e-15 < 1e-10
+        2       True  2.316e-04  0.28  2.405e-02  0.08   2.9e-15
+  [PASS] skew, 2 block(s), rhie_chow=True: stayed finite
+  [PASS] skew, 2 block(s), rhie_chow=True: flux divergence 2.9e-15 < 1e-10
+  [PASS] skew, 2 block(s): pressure oscillation not made worse (3.77e-03 -> 2.32e-04)
+  [PASS] skew, 2 block(s): velocity oscillation not made worse (2.38e-02 -> 2.40e-02)
+        4      False  3.770e-03  0.74  2.380e-02  0.08   3.9e-15
+  [PASS] skew, 4 block(s), rhie_chow=False: stayed finite
+  [PASS] skew, 4 block(s), rhie_chow=False: flux divergence 3.9e-15 < 1e-10
+        4       True  2.316e-04  0.28  2.405e-02  0.07   2.7e-15
+  [PASS] skew, 4 block(s), rhie_chow=True: stayed finite
+  [PASS] skew, 4 block(s), rhie_chow=True: flux divergence 2.7e-15 < 1e-10
+  [PASS] skew, 4 block(s): pressure oscillation not made worse (3.77e-03 -> 2.32e-04)
+  [PASS] skew, 4 block(s): velocity oscillation not made worse (2.38e-02 -> 2.40e-02)
+
+  block-count independence on the SKEW grid, with the fix on:
+  [PASS]     2 blocks vs 1: |u|max differs by 2.22e-16
+  [PASS]     4 blocks vs 1: |u|max differs by 2.22e-16
+
+==========================================================================
+  28/28 checks passed
+==========================================================================

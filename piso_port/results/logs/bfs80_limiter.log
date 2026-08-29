@@ -1,0 +1,6 @@
+  Production resolution nx=80, ny 18/20, nz=6 -- which flag, and WHERE?
+
+    persist  rhie   ddt  died@  blk   i   j  k  where
+       True False False      0     -   -   -   -  survived
+       True  True False      0     -   -   -   -  survived
+       True  True  True      0     -   -   -   -  survived

@@ -1,0 +1,19 @@
+  ORDER GATE -- Rhie-Chow is O(h^3), so it must be invisible to a smooth field.
+  L2 vs the exact duct Fourier series.
+
+  warp A=0.00
+      n        RC off         RC on   rel diff
+      8    5.9714e-03    5.9714e-03     0.00%
+     16    1.4335e-03    1.4335e-03     0.00%
+     32    3.4922e-04    3.4922e-04     0.00%
+    rhie_chow=False  rates: 2.06, 2.04
+    rhie_chow=True   rates: 2.06, 2.04
+
+  warp A=0.05
+      n        RC off         RC on   rel diff
+      8    6.9448e-03    6.9782e-03     0.48%
+     16    1.5832e-03    1.5899e-03     0.42%
+     32    4.0561e-04    4.0604e-04     0.11%
+    rhie_chow=False  rates: 2.13, 1.96
+    rhie_chow=True   rates: 2.13, 1.97
+

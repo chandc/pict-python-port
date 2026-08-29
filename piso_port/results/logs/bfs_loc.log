@@ -1,0 +1,23 @@
+  Where does |p| peak as it goes unstable? (LOW block: j=ny-1 is the SEAM,
+  i=0 is the STEP WALL. UP block: j=0 is the seam, i=0 is the INFLOW.)
+
+   step      |p|max  block   i   j  location
+     30   2.134e+00     UP  39   8  interior
+     60   1.901e+00     UP  39   5  interior
+     90   7.787e+00     UP   0  11  x=0 edge
+    120   5.381e+01     UP   0  11  x=0 edge
+    150   3.782e+02     UP   0  11  x=0 edge
+    180   7.579e+04     UP   2   1  SEAM
+    181   2.053e+06     UP   2   7  interior
+    182   1.010e+09     UP   2   4  interior
+    183   4.607e+09     UP   4   9  interior
+    184   6.052e+10     UP   0   5  x=0 edge
+    185   8.697e+11     UP   1   5  x=0 edge
+    186   1.766e+12     UP   2   6  interior
+    187   6.543e+15     UP   1   5  x=0 edge
+    188   1.112e+17     UP   5   6  interior
+    189   1.623e+18     UP   5   5  interior
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-danielchan-Dropbox-PICT/810ee661-8975-4326-a825-8e771c1edef9/scratchpad/bfs_loc.py", line 36, in <module>
+    ny = d.blocks[blk].shape[1]
+TypeError: list indices must be integers or slices, not NoneType

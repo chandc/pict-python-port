@@ -1,0 +1,7 @@
+  GATE D2 -- ddt_corr across blocks, and dt independence.
+
+   blocks      dt     RC only      RC+ddt      divF  died
+        2  0.0200   6.408e-13   1.658e-13   2.4e-15     0
+        2  0.0050   5.681e-10   8.177e-13   2.6e-15     0
+        4  0.0200   4.904e-13   2.236e-13   2.5e-15     0
+        4  0.0050   1.150e-09   7.309e-13   2.6e-15     0

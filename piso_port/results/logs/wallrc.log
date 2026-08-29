@@ -1,0 +1,4 @@
+  Net volume-integrated div(RC) -- must be ~0 for the Neumann solve to be compatible
+
+    as implemented                      : -7.5436e-02
+    with wall-adjacent faces zeroed     : -7.5436e-02

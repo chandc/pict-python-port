@@ -28,7 +28,9 @@ from run_armaly_bfs import run, H_IN, U_BULK
 from armaly_bfs_grid import S
 
 RE = 100.0
-CACHE = "results/bfs_field_Re100.npz"
+RHIE_CHOW = True
+CACHE = ("results/bfs_field_rc_Re100.npz" if RHIE_CHOW
+         else "results/bfs_field_Re100.npz")
 STATIONS = [0.5, 2.0, 3.2, 6.0, 10.0]      # x/S; 3.2 is the measured reattachment
 
 
@@ -39,7 +41,8 @@ def field():
         return {k: d[k] for k in d.files}
     except (FileNotFoundError, OSError):
         pass
-    xr, err, m, dom = run(Re=RE, nx=80, ny_lo=18, ny_up=20, nz=6, dt=0.02, nsteps=1500)
+    xr, err, m, dom = run(Re=RE, nx=80, ny_lo=18, ny_up=20, nz=6, dt=0.02,
+                          nsteps=1500, rhie_chow=RHIE_CHOW)
     if err:
         raise SystemExit(err)
     LOW, UP = 0, 1

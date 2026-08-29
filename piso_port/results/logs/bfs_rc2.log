@@ -1,0 +1,6 @@
+  ARMALY BFS -- does the fix preserve the physics and kill the checkerboard?
+  Reference: x_r/S ~ 3 at Re=100. Baseline had 22.6% amplitude, 36/36 sign flips.
+
+     Re  rhie_chow   x_r/S     amp(p)  flip(p)     amp(u)  flip(u)      divF
+    100      False   3.167  1.181e-02     0.98  3.028e-03     0.04   5.3e-04
+    100       True   diverged at step 439

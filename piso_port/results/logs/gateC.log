@@ -1,0 +1,9 @@
+  GATE C -- dt independence. Gamma ~ dt, so plain Rhie-Chow damping is O(dt) and
+  should WEAKEN as dt shrinks. ddt_corr must remove that dependence.
+
+       dt  steps |            RC only |      RC + ddt_corr
+                 |     ratio odd-even |     ratio odd-even
+   0.0200    100 |     14.2% 1.93e-02 |      2.6% 4.31e-04   
+   0.0100    200 |     15.6% 2.28e-02 |      2.8% 4.62e-04   
+   0.0050    400 |     17.0% 2.61e-02 |      3.0% 4.88e-04   
+   0.0025    800 |     18.0% 2.87e-02 |      3.7% 7.37e-04   

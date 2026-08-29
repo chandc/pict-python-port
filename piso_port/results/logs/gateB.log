@@ -1,0 +1,13 @@
+  GATE B -- Rhie-Chow ON TOP of a persistent flux (the whole point of the plan).
+  The old failure was RC injected onto a flux being rebuilt underneath it.
+
+   persistent  rhie_chow       divF   odd-even    ratio  DCwarn  finite   |u|max
+         True      False    5.1e-13  3.171e-02    20.6%       0    True   1.1915
+         True       True    6.5e-13  2.149e-02    15.0%       0    True   1.1929
+        False       True    5.2e-13  2.150e-02    15.0%       0    True   1.1928
+
+  Refinement with the full fix (persistent + RC) -- the mode must now CONVERGE:
+     n    odd-even      range    ratio  finite
+     8   3.386e-02  2.326e-01    14.6%    True
+    12   2.149e-02  1.431e-01    15.0%    True
+    16         nan        nan     nan%   False

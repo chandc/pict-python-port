@@ -1,0 +1,11 @@
+  Which flag breaks mass conservation on the warped multi-block channel?
+
+    persist  rhie_chow  ddt_corr       divF
+      False      False     False   2.57e-15
+       True      False     False   1.77e-15
+       True       True     False   1.75e-15
+       True       True      True   1.43e-15
+
+  Is the wall flux being polluted? (F at an impermeable wall must stay 0)
+    block 0: |F| on the y-walls = 0.000e+00
+    block 1: |F| on the y-walls = 0.000e+00

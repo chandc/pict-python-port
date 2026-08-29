@@ -1,0 +1,10 @@
+  Does the pressure checkerboard FEED BACK into the velocity, or is it inert?
+  Test: filter the mode out of p after every step; if u is unchanged, it is inert.
+
+  unfiltered p: odd-even 2.945e-02  (25.5% of range)
+  filtered   p: odd-even 5.685e-03  (6.5% of range)
+
+  max|u_filtered - u_unfiltered| = 1.440e-02
+  relative to |u|max = 1.2842  ->  1.121%
+
+  FEEDBACK: the mode does reach the velocity

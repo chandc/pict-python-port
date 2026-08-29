@@ -282,6 +282,47 @@ The lesson is the one this file keeps re-learning: the synthetic gates were all 
 walled, and a wall hides the boundary-stencil defect because the pressure gradient normal to it
 is already ~0. Nothing short of a case with a real inflow would have surfaced either bug.
 
+## The unit-gain bug in `ddt_corr`
+
+After both boundary fixes the BFS still diverged, at step 439 instead of 319, at production
+resolution (nx=80) while surviving every coarser isolation run. Isolating by flag showed
+`persistent_flux + rhie_chow` surviving 600 steps and only `ddt_corr` failing.
+
+The cause is arithmetic. `ddt_corr` weights the flux recurrence by `Gamma/dt`, and
+`Gamma = J/rowsum(A)` under SIMPLEC. The conservative central convection and conservative
+diffusion operators BOTH have zero row sum, so `rowsum(A) = J/dt` exactly. Measured:
+
+    Gamma/dt : min 1.000000  max 1.000000  mean 1.000000
+
+Unit gain at every face in the domain. The recurrence `F <- ... + 1.0*(F_prev - F_old)` is
+marginally stable at best, so any inconsistency grows without bound -- which is why it passed
+short and coarse runs and failed long and fine ones.
+
+OpenFOAM never uses the raw form. `fvcDdtPhiCoeff` limits it:
+
+    coeff = 1 - min(|F_prev - F_old| / (|F_prev| + eps), 1)
+
+The coefficient goes to ZERO exactly where the face flux and the interpolated cell flux
+disagree most -- where the raw term is least trustworthy. That had simply not been implemented.
+With it, all three flag combinations run the BFS at nx=80 for 600 steps.
+
+## Result on the backward-facing step
+
+| | p amplitude | p flips | u amplitude | u flips | x_r/S |
+|---|---|---|---|---|---|
+| Rhie-Chow off | 1.181e-02 | **0.98** | 3.028e-03 | 0.04 | 3.167 |
+| Rhie-Chow on | **1.316e-04** | **0.06** | 3.019e-03 | 0.04 | 3.140 |
+
+The amplitude falls 90x and the flip fraction falls to smooth-field level -- 0.06 against the
+velocity's 0.04. It is not a smaller checkerboard; there is no longer a checkerboard.
+Reattachment moves 0.85% and still matches Armaly's ~3, which is the control that matters: a
+pressure fix that moved the physics would be a regression.
+
+One number not to gloss: `max|u_on - u_off| = 4.05e-02`, ~2.7% of |u|max, concentrated in the
+shear layer. Given the mode was measured feeding back into u at ~1%, some of that is plausibly
+the CORRECTION rather than a perturbation -- but which is unproven, and it is the open question
+before these flags default on.
+
 ## Measuring oscillation: neither single number works
 
 Two metrics were tried and both were wrong, in opposite directions.

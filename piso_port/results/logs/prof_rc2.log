@@ -1,0 +1,11 @@
+   Re=   100  nu=0.02122  1500 steps  divF 4.2e-15  x_r/S =  3.140   [773s]
+  wrote results/bfs_field_rc_Re100.npz   x_r/S = 3.140
+
+  station     min u      max |v|     p - p_mean      reversed flow?
+   x/S=  0.5   -0.0775     0.1095       0.0322      yes
+   x/S=  2.0   -0.1122     0.1902       0.1130      yes
+   x/S=  3.2    0.0000     0.1359       0.2030      no
+   x/S=  5.9    0.0000     0.0077       0.1994      no
+   x/S=  9.9    0.0000     0.0011       0.0827      no
+
+wrote bfs_profiles.png
