@@ -410,7 +410,7 @@ class Domain:
                                   (np.concatenate(rows), np.concatenate(cols))),
                                  shape=(N, N)).tocsr()
 
-    def pad_field(self, b, f, width=2):
+    def pad_field(self, b, fields, width=2):
         """
         Ghost-pad a SCALAR FIELD of block b across its periodic/connected faces.
 
@@ -427,7 +427,13 @@ class Domain:
         Returns (padded, lo, hi) so the caller can strip the ghosts afterwards.
         """
         blk = self.blocks[b]
-        cur = np.asarray(f)
+        if isinstance(fields, np.ndarray):
+            raise TypeError(
+                "pad_field needs the field for EVERY block, as a dict or list keyed by block "
+                "index -- a connected face reads across the seam. Passing one array cannot "
+                "work, and an earlier cached-state version of this API silently used whichever "
+                "field had been registered last for all three velocity components.")
+        cur = np.asarray(fields[b])
         if cur.shape != blk.shape:
             raise ValueError(f"field shape {cur.shape} does not match block {b} {blk.shape}")
         lo, hi = [0, 0, 0], [0, 0, 0]
@@ -436,7 +442,8 @@ class Domain:
         for axis in conn_axes + [a for a in range(3) if a not in conn_axes]:
             g = {}
             for side in (0, 1):
-                lay = self._ghost_layers_field(b, face_id(axis, side), width, cur)
+                lay = self._ghost_layers_field(b, face_id(axis, side), width, cur,
+                                               fields)
                 g[side] = lay
             if g[0] is None and g[1] is None:
                 continue
@@ -453,7 +460,7 @@ class Domain:
                 hi[axis] = width
         return cur, lo, hi
 
-    def _ghost_layers_field(self, b, fid, width, cur):
+    def _ghost_layers_field(self, b, fid, width, cur, fields):
         """Layers of a scalar field beyond face `fid`, in b's ordering. No period shift."""
         blk = self.blocks[b]
         axis, side = face_axis_side(fid)
@@ -468,11 +475,7 @@ class Domain:
             return None
         ob, ofid, to_mine, _ = nb
         oaxis, oside = face_axis_side(ofid)
-        other = self._field_cache.get(ob) if hasattr(self, "_field_cache") else None
-        if other is None:
-            raise RuntimeError(
-                "pad_field needs the neighbour's field. Call Domain.set_fields({b: array}) "
-                "for every block first, so a connected face can read across the seam.")
+        other = np.asarray(fields[ob])
         sl = [slice(None)] * 3
         sl[oaxis] = slice(0, width) if oside == 0 else slice(-width, None)
         lay = np.moveaxis(other[tuple(sl)], oaxis, 0)
@@ -480,6 +483,70 @@ class Domain:
             lay = lay[::-1]
         return np.stack([to_mine(l) for l in lay])
 
-    def set_fields(self, fields):
-        """Register the per-block arrays that pad_field will read across connections."""
-        self._field_cache = dict(fields)
+
+    # ------------------------------------------------------------------ seam-aware operators
+
+    def padded_geometry(self, b, width=1):
+        """Jacobian and metrics on the PADDED block, ghosts retained."""
+        from phase1_grid_metrics import _metrics_core
+        blk = self.blocks[b]
+        xp, yp, zp, lo, hi = self.pad_coords(b, max(width, 2))
+        J, m = _metrics_core(xp, yp, zp, *blk.h)
+        # metrics need width>=2 for the nested derivatives, but the caller may only want 1
+        trim = [max(0, (max(width, 2) if lo[a] else 0) - width) for a in range(3)]
+        trimh = [max(0, (max(width, 2) if hi[a] else 0) - width) for a in range(3)]
+        sl = tuple(slice(trim[a] or None, -trimh[a] if trimh[a] else None) for a in range(3))
+        lo2 = [lo[a] - trim[a] for a in range(3)]
+        hi2 = [hi[a] - trimh[a] for a in range(3)]
+        return J[sl], {k: v[sl] for k, v in m.items()}, lo2, hi2
+
+    def face_fluxes(self, b, us, vs, ws):
+        """
+        Face fluxes for block b with CONNECTED and PERIODIC faces resolved from real neighbour
+        data, so a seam face is an ordinary interior face rather than a prescribed boundary.
+
+        This is what `compute_face_fluxes` cannot do block-locally: it treats every
+        non-periodic face as a domain boundary, so a connection would receive a PRESCRIBED flux
+        instead of an interpolated one -- mass would be injected or lost at every seam.
+
+        Wall faces keep the single-block behaviour (flux from the boundary cell's contravariant
+        component, zero for an impermeable wall).
+        """
+        from phase5_fluxes import contravariant_components
+        blk = self.blocks[b]
+        Jp, mp, lo, hi = self.padded_geometry(b, 1)
+        up = self.pad_field(b, us, 1)[0]
+        vp = self.pad_field(b, vs, 1)[0]
+        wp = self.pad_field(b, ws, 1)[0]
+        JU = contravariant_components(up, vp, wp, Jp, mp)
+        F = []
+        for axis in range(3):
+            n = blk.shape[axis]
+            shape = list(blk.shape); shape[axis] += 1
+            f = np.zeros(shape)
+            for k in range(n + 1):
+                a_lo = lo[axis] + k - 1
+                a_hi = lo[axis] + k
+                sl_out = [slice(None)] * 3; sl_out[axis] = k
+                core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
+                if a_lo < 0 or a_hi >= JU[axis].shape[axis]:
+                    # a true domain boundary: fall back to the boundary cell's own component
+                    idx = max(a_lo, 0) if a_lo < 0 else a_hi - 1
+                    sl_in = list(core); sl_in[axis] = idx
+                    f[tuple(sl_out)] = JU[axis][tuple(sl_in)]
+                    continue
+                s1 = list(core); s1[axis] = a_lo
+                s2 = list(core); s2[axis] = a_hi
+                f[tuple(sl_out)] = 0.5 * (JU[axis][tuple(s1)] + JU[axis][tuple(s2)])
+            F.append(f)
+        return F
+
+    def divergence(self, b, F, J):
+        """Flux divergence for block b -- identical form to divergence_from_fluxes."""
+        blk = self.blocks[b]
+        d = np.zeros(blk.shape)
+        for axis in range(3):
+            lo_s = [slice(None)] * 3; lo_s[axis] = slice(0, -1)
+            hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
+            d += (F[axis][tuple(hi_s)] - F[axis][tuple(lo_s)]) / blk.h[axis]
+        return d / J

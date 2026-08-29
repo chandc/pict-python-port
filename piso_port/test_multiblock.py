@@ -328,10 +328,9 @@ if __name__ == "__main__":
         dd = warped_split(n_split)
         nxb = NTOT // n_split
         parts = {b: fld[b * nxb:(b + 1) * nxb] for b in range(n_split)}
-        dd.set_fields(parts)
         err = 0.0
         for b in range(n_split):
-            pf, lo, hi = dd.pad_field(b, parts[b], width=2)
+            pf, lo, hi = dd.pad_field(b, parts, width=2)
             core = (slice(lo[0], pf.shape[0] - hi[0]),
                     slice(lo[1], pf.shape[1] - hi[1]),
                     slice(lo[2], pf.shape[2] - hi[2]))
@@ -349,14 +348,47 @@ if __name__ == "__main__":
     # The trap, demonstrated: applying the COORDINATE period shift to a field.
     dd = warped_split(2)
     parts = {b: fld[b * (NTOT // 2):(b + 1) * (NTOT // 2)] for b in range(2)}
-    dd.set_fields(parts)
-    good, lo, hi = dd.pad_field(0, parts[0], width=2)
+    good, lo, hi = dd.pad_field(0, parts, width=2)
     bad = good.copy()
     bad[lo[0] + NTOT // 2:] += 1.0                # what a period shift would inject
     check("a period shift on a FIELD would be a large error, not a subtle one",
           np.abs(bad - good).max() > 0.5,
           f"it displaces the seam ghosts by {np.abs(bad - good).max():.1f} = one period; "
           f"fields must be padded WITHOUT the shift that coordinates require")
+
+    print("\n10. SEAM-AWARE FLUXES and DIVERGENCE (the last piece before a PISO step)")
+    # compute_face_fluxes cannot do this block-locally: it treats every non-periodic face as a
+    # DOMAIN BOUNDARY, so a connection would receive a PRESCRIBED flux rather than an
+    # interpolated one, injecting or losing mass at every seam. Domain.face_fluxes resolves
+    # connected faces from real neighbour data, making a seam an ordinary interior face.
+    from phase5_fluxes import compute_face_fluxes, divergence_from_fluxes
+    Kw = 2 * np.pi
+    uu = np.sin(Kw * xs) * np.cos(Kw * ys) * np.cos(Kw * zs)
+    vv = -np.cos(Kw * xs) * np.sin(Kw * ys) * np.cos(Kw * zs)
+    ww = np.zeros_like(uu)
+    Fs = compute_face_fluxes(uu, vv, ww, Jref, mref, boundary="periodic", periodic=P3)
+    dref = divergence_from_fluxes(Fs, Jref, (hx, hy, hz))
+    for n_split in (2, 4):
+        dd = warped_split(n_split)
+        nxb = NTOT // n_split
+        us = {b: uu[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        vs = {b: vv[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        ws = {b: ww[b * nxb:(b + 1) * nxb] for b in range(n_split)}
+        fe = de = 0.0
+        for b in range(n_split):
+            F = dd.face_fluxes(b, us, vs, ws)
+            Jb, _ = dd.block_metrics(b)
+            db = dd.divergence(b, F, Jb)
+            cell = slice(b * nxb, (b + 1) * nxb)
+            de = max(de, np.abs(db - dref[cell]).max())
+            fe = max(fe, np.abs(F[0] - Fs[0][b * nxb:(b + 1) * nxb + 1]).max())
+            for a in (1, 2):
+                fe = max(fe, np.abs(F[a] - Fs[a][cell]).max())
+        check(f"{n_split}-block seam fluxes equal the single-block fluxes",
+              fe < 1e-14, f"max |flux - single| = {fe:.2e}")
+        check(f"{n_split}-block seam divergence equals the single-block divergence",
+              de < 1e-13, f"max |div - single| = {de:.2e} (single-block max|div| itself is "
+                          f"{np.abs(dref).max():.2e}, coarse-grid truncation at n={NTOT})")
 
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")

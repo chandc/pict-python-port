@@ -404,6 +404,26 @@ per-block on padded fields using the already-verified `pressure_face_fluxes`, wi
 7-point matrix (assembled exactly, above) as the preconditioner. That reuses verified code
 rather than requiring a new seam-aware 19-point assembler.
 
+### Seam-aware fluxes and divergence: landed and exact
+
+`Domain.face_fluxes` resolves connected faces from real neighbour data, so a seam is an ordinary
+interior face. This is what `compute_face_fluxes` cannot do block-locally: it treats every
+non-periodic face as a **domain boundary**, so a connection would receive a *prescribed* flux
+rather than an interpolated one — injecting or losing mass at every seam.
+
+Against the single-block result on a warped grid, split 2 and 4 ways:
+
+| | 2 blocks | 4 blocks |
+|---|---|---|
+| max \|flux − single\| | 1.11e-16 | 1.11e-16 |
+| max \|div − single\| | 9.44e-16 | 9.44e-16 |
+
+**An API flaw fixed on the way.** `pad_field` originally read the neighbour's data from a cached
+`set_fields({block: array})`. That holds ONE field per block, so padding $u$, $v$ and $w$ in turn
+would read whichever component had been registered last across every seam — a silent, smooth
+corruption. The field for every block is now passed explicitly and passing a bare array raises
+rather than guessing.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
