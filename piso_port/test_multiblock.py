@@ -666,6 +666,55 @@ if __name__ == "__main__":
     check("without a body force the channel stays at rest, as it should", quiet < 1e-14,
           f"max|u| = {quiet:.1e} -- a zero field here is correct physics, not a solver failure")
 
+    print("\n16. WARPED multi-block: implicit cross terms across seams")
+    # Removes the Cartesian-only limitation. Two cross operators are needed, not one:
+    #   PRESSURE  -- Domain.pressure_face_fluxes(include_cross=True), solved implicitly with the
+    #                exact global 7-point matrix as preconditioner
+    #   MOMENTUM  -- Domain.cross_diffusion, carried explicitly and iterated (deferred
+    #                correction), exactly as the single-block solver does
+    from phase1_grid_metrics import make_grid as _mg
+    NTw, NUw, DTw, Kw2, Ww = 8, 0.05, 0.02, 2 * np.pi, 0.08
+    sw = PISOSolver((NTw, NTw, NTw), warp=Ww, nu=NUw, dt=DTw, corrector_steps=2, periodic=P3,
+                    scheme="chorin", time_scheme="be", convection="central",
+                    pressure_coef="rowsum", pressure_tol=1e-13, picard_iters=1,
+                    implicit_cross=True, momentum_dc_iters=2)
+    uw = np.sin(Kw2 * sw.x) * np.cos(Kw2 * sw.y) * np.cos(Kw2 * sw.z)
+    vw = -np.cos(Kw2 * sw.x) * np.sin(Kw2 * sw.y) * np.cos(Kw2 * sw.z)
+    sw.u, sw.v, sw.w = uw.copy(), vw.copy(), np.zeros_like(uw)
+    with _cl.redirect_stdout(_io.StringIO()):
+        for _ in range(5):
+            dws = sw.step()
+    xw, yw, zw, hxw, hyw, hzw = _mg((NTw, NTw, NTw), warp=Ww, periodic=P3)
+
+    def wsplit(n):
+        nxb = NTw // n
+        bl = []
+        for b in range(n):
+            sl = slice(b * nxb, (b + 1) * nxb)
+            blk = Block((nxb, NTw, NTw), xw[sl], yw[sl], zw[sl], (hxw, hyw, hzw))
+            for a in (1, 2):
+                blk.faces[face_id(a, 0)] = blk.faces[face_id(a, 1)] = "periodic"
+            bl.append(blk)
+        return Domain(bl, [Connection(b, face_id(0, 1), (b + 1) % n, face_id(0, 0),
+                                      shift=(1.0, 0, 0) if (b + 1) % n == 0 else (0, 0, 0))
+                           for b in range(n)])
+
+    for n_split in (2, 4):
+        dw = wsplit(n_split)
+        m = MultiBlockPISO(dw, NUw, DTw, 2, 1e-13, time_scheme="be", scheme="chorin",
+                           picard_iters=1, implicit_cross=True)
+        nxb = NTw // n_split
+        for b in range(n_split):
+            m.u[b] = uw[b * nxb:(b + 1) * nxb].copy()
+            m.v[b] = vw[b * nxb:(b + 1) * nxb].copy()
+        for _ in range(5):
+            dwm = m.step()
+        ue = np.concatenate([m.u[b] for b in range(n_split)], axis=0)
+        check(f"{n_split}-block WARPED matches the single-block solver",
+              np.abs(ue - sw.u).max() < 1e-9 and dwm < 1e-11,
+              f"max|u - u_single| = {np.abs(ue - sw.u).max():.2e} at warp {Ww}; "
+              f"flux divergence {dwm:.1e} (single block {dws:.1e})")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

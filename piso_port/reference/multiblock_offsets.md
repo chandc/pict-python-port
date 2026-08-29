@@ -553,6 +553,31 @@ has nothing driving it and the velocity stays identically zero. The first wall t
 looked like a solver failure. There is now a gate asserting that a *forceless* channel stays at
 rest, so the zero field is pinned as correct physics rather than mistaken for a bug again.
 
+### Warped multi-block: the Cartesian-only limit removed
+
+Two cross operators were needed, not one, and finding that took two rounds of debugging:
+
+- **Pressure** — `Domain.pressure_face_fluxes(include_cross=True)`, solved implicitly with the
+  exact global 7-point matrix as an ILU preconditioner. Matches the single-block cross flux to
+  **2.7e-17**.
+- **Momentum** — `Domain.cross_diffusion`, carried explicitly and iterated, exactly the deferred
+  correction the single-block solver applies. It needs **two nested derivatives**, so the field
+  is padded with `width=2`; padding with 1 leaves the outer derivative one-sided at every seam.
+
+| split, warp 0.08 | vs single block | flux divergence |
+|---|---|---|
+| 2 blocks | **3.17e-11** | 1.4e-13 |
+| 4 blocks | **3.17e-11** | 1.8e-13 |
+
+**Two bugs, each of which produced a plausible field:**
+
+1. The corrector subtracted an **orthogonal-only** flux while the pressure had been solved with
+   the *full* operator. Inconsistent, so the corrected flux was not solenoidal — divergence
+   3.2e-02 against the single-block 1.5e-13.
+2. With that fixed the divergence was perfect (6.7e-14) and the velocity was still wrong by
+   5.5e-02, because the **momentum** cross-diffusion was missing entirely. A divergence-free but
+   incorrect velocity is exactly the failure mode a flux-divergence diagnostic cannot see.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

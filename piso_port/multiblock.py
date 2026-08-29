@@ -573,24 +573,42 @@ class Domain:
             out.append(tot[core])
         return out
 
-    def pressure_face_fluxes(self, b, ps, coef_b, coefs):
+    def pressure_face_fluxes(self, b, ps, coef_b, coefs, include_orth=True,
+                             include_cross=False):
         """
-        Pressure flux through each face of block b, with seams resolved from the neighbour.
+        Pressure flux through each face of block b, seams resolved from the neighbour.
 
-        Mirrors phase5_fluxes.pressure_face_fluxes: Phi_f = c_f (p_N - p_P)/h with c_f the SAME
-        face-interpolated coefficient the matrix carries, so the discrete divergence of Phi is
-        exactly the matrix action. Domain boundary faces stay zero (Neumann); a CONNECTED face
-        is an interior face and gets a real neighbour difference.
+        Mirrors phase5_fluxes.pressure_face_fluxes. The ORTHOGONAL part is
+        c_f (p_N - p_P)/h with c_f the same face-interpolated coefficient the matrix carries,
+        so its discrete divergence is exactly the matrix action. The CROSS part is the
+        cell-centred quantity  sum_{b != axis} coef*J*g^{axis,b} * dp/dxi_b  interpolated to the
+        face -- which needs dp along the OTHER axes, and therefore needs the padded field: a
+        block-local derivative would be one-sided at every seam and wrong there.
+
+        Domain boundary faces stay zero (Neumann); a CONNECTED face is an interior face.
         """
         blk = self.blocks[b]
         pp = self.pad_field(b, ps, 1)[0]
         cc = self.pad_field(b, coefs, 1)[0]
         Jp, mp, lo, hi = self.padded_geometry(b, 1)
+        KEYS = (("xi_x", "xi_y", "xi_z"), ("eta_x", "eta_y", "eta_z"),
+                ("zeta_x", "zeta_y", "zeta_z"))
+
+        def g_off(a1, a2):
+            ka, kb = KEYS[a1], KEYS[a2]
+            return sum(mp[ka[c]] * mp[kb[c]] for c in range(3))
+
+        dp = [np.gradient(pp, blk.h[a], axis=a, edge_order=2) for a in range(3)] \
+            if include_cross else None
+
         out = []
         for axis in range(3):
-            key = ("xi", "eta", "zeta")[axis]
-            g = mp[f"{key}_x"] ** 2 + mp[f"{key}_y"] ** 2 + mp[f"{key}_z"] ** 2
+            g = sum(mp[KEYS[axis][c]] ** 2 for c in range(3))
             Jg = cc * Jp * g
+            cross_cell = None
+            if include_cross:
+                cross_cell = sum(cc * Jp * g_off(axis, o) * dp[o]
+                                 for o in range(3) if o != axis)
             n = blk.shape[axis]
             shape = list(blk.shape); shape[axis] += 1
             f = np.zeros(shape)
@@ -598,17 +616,19 @@ class Domain:
             for k in range(n + 1):
                 a_lo, a_hi = lo[axis] + k - 1, lo[axis] + k
                 if a_lo < 0 or a_hi >= Jg.shape[axis]:
-                    continue                              # domain boundary: zero flux (Neumann)
+                    continue                              # domain boundary: Neumann, zero flux
                 s1 = list(core); s1[axis] = a_lo
                 s2 = list(core); s2[axis] = a_hi
-                # ONE division by h, not two. The matrix carries cf = 0.5(Jg_P+Jg_N)/h^2 and
-                # divergence_from_fluxes divides by h again, so for J*div(Phi) to equal the
-                # matrix action the flux must be 0.5(Jg_P+Jg_N)(p_N-p_P)/h. An extra 1/h makes
-                # the correction h^-1 times too large -- a factor of 8 at h=1/8, which blows the
-                # solution up rather than degrading it quietly.
-                cf = 0.5 * (Jg[tuple(s1)] + Jg[tuple(s2)])
                 sl_out = [slice(None)] * 3; sl_out[axis] = k
-                f[tuple(sl_out)] = cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
+                val = 0.0
+                if include_orth:
+                    # ONE division by h: the matrix carries cf/h^2 and divergence_from_fluxes
+                    # divides by h again.
+                    cf = 0.5 * (Jg[tuple(s1)] + Jg[tuple(s2)])
+                    val = val + cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
+                if include_cross:
+                    val = val + 0.5 * (cross_cell[tuple(s1)] + cross_cell[tuple(s2)])
+                f[tuple(sl_out)] = val
             out.append(f)
         return out
 
@@ -808,3 +828,33 @@ class Domain:
                     continue
                 m[gid[face_slice(fid)].ravel()] = True
         return m
+
+    def cross_diffusion(self, b, fields, width=2):
+        """
+        Cross-derivative part of the Laplacian for block b, seams resolved from the neighbour.
+
+        Mirrors phase3_momentum.compute_cross_diffusion: (1/J) div of the cross fluxes
+        J(g12 dphi/deta + g13 dphi/dzeta) and cyclic. It needs TWO nested derivatives, so the
+        field is padded with width=2 -- padding with 1 leaves the outer derivative one-sided at
+        every seam.
+
+        This is the momentum counterpart of the pressure cross term. Omitting it on a warped
+        grid leaves the momentum equation solving the orthogonal operator only, which produces
+        a divergence-free but WRONG velocity: measured 5.5e-02 against the single-block solver
+        while the flux divergence looked perfect at 6.7e-14.
+        """
+        blk = self.blocks[b]
+        pf, lo, hi = self.pad_field(b, fields, width)
+        Jp, mp, plo, phi_ = self.padded_geometry(b, width)
+        g12 = sum(mp[f"xi_{c}"] * mp[f"eta_{c}"] for c in "xyz")
+        g13 = sum(mp[f"xi_{c}"] * mp[f"zeta_{c}"] for c in "xyz")
+        g23 = sum(mp[f"eta_{c}"] * mp[f"zeta_{c}"] for c in "xyz")
+        d = [np.gradient(pf, blk.h[a], axis=a, edge_order=2) for a in range(3)]
+        fx = Jp * (g12 * d[1] + g13 * d[2])
+        fe = Jp * (g12 * d[0] + g23 * d[2])
+        fz = Jp * (g13 * d[0] + g23 * d[1])
+        cd = (np.gradient(fx, blk.h[0], axis=0, edge_order=2)
+              + np.gradient(fe, blk.h[1], axis=1, edge_order=2)
+              + np.gradient(fz, blk.h[2], axis=2, edge_order=2)) / Jp
+        core = tuple(slice(plo[a], plo[a] + blk.shape[a]) for a in range(3))
+        return cd[core]

@@ -44,7 +44,7 @@ validate each one before moving on.
 | Inviscid energy conservation, central | **1e-16** — exact to round-off |
 | Inviscid energy loss, SOU | **10.35%** of E per turnover on a broadband field |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
-| Automated checks | **168**, all passing |
+| Automated checks | **170**, all passing |
 
 <p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
@@ -304,7 +304,7 @@ uv run test_outflow.py                     #  inflow/outflow BCs (Dong path has 
 uv run stokes_decay_study.py               #  decay + decay rate over a 100x amplitude drop
 uv run stokes_error_matrix.py              #  5x5 error matrix in (resolution, dt)
 uv run test_energy_conservation.py         #  6 checks: inviscid KE conservation (central vs SOU)
-uv run test_multiblock.py                  # 45 checks: seam ops, PISO step, 2x2 topology, walls
+uv run test_multiblock.py                  # 47 checks: seam ops, PISO step, 2x2, walls, warped
 uv run test_chan_channel.py                #  4 checks: replicates an independent SEM solver (Chan 1996)
 uv run test_orr_sommerfeld.py              #  2 checks: Orr-Sommerfeld growth at Re=7500
 
