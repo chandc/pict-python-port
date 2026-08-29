@@ -543,6 +543,72 @@ if __name__ == "__main__":
           np.abs(ue - sref.u).max() < 1e-8 and dmv < 1e-12,
           f"max|u - u_single| = {np.abs(ue - sref.u).max():.2e}, flux divergence {dmv:.1e}")
 
+    print("\n14. 2x2 TOPOLOGY: blocks connected on TWO axes (corner ghosts)")
+    # The topology every real geometry needs and a strip of blocks never exercises. PICT's own
+    # vortex-street sample uses 8 blocks around the obstacle, and every edge block is connected
+    # on two axes. Padding axis 1 then requires the neighbour's data ALREADY PADDED along axis
+    # 0, or the corner ghosts are missing -- pad_coords and pad_field are recursive for this.
+    # the reference domain is (NTOT, NY, NZ) = (8, 6, 4), NOT cubic
+    nhx, nhy = NTOT // 2, NY // 2
+
+    def grid2x2(warped=True):
+        bl, ix = [], {}
+        for i in range(2):
+            for j in range(2):
+                sl = (slice(i*nhx, (i+1)*nhx), slice(j*nhy, (j+1)*nhy), slice(None))
+                blk = Block((nhx, nhy, NZ), xs[sl], ys[sl], zs[sl], (hx, hy, hz))
+                blk.faces[face_id(2, 0)] = blk.faces[face_id(2, 1)] = "periodic"
+                ix[(i, j)] = len(bl); bl.append(blk)
+        cs = []
+        for i in range(2):
+            for j in range(2):
+                b = ix[(i, j)]
+                cs.append(Connection(b, face_id(0, 1), ix[((i+1) % 2, j)], face_id(0, 0),
+                                     shift=(1.0, 0, 0) if (i+1) % 2 == 0 else (0, 0, 0)))
+                cs.append(Connection(b, face_id(1, 1), ix[(i, (j+1) % 2)], face_id(1, 0),
+                                     shift=(0, 1.0, 0) if (j+1) % 2 == 0 else (0, 0, 0)))
+        return Domain(bl, cs), ix
+
+    d22, ix22 = grid2x2()
+    check("2x2 domain validates clean", d22.validate() == [],
+          "connections on two axes per block are now supported (recursive padding)")
+
+    Jerr = merr = ferr = 0.0
+    for (i, j), b in ix22.items():
+        Jb, mb = d22.block_metrics(b)
+        sl = (slice(i*nhx, (i+1)*nhx), slice(j*nhy, (j+1)*nhy), slice(None))
+        Jerr = max(Jerr, np.abs(Jb - Jref[sl]).max())
+        for k in mref:
+            merr = max(merr, np.abs(mb[k] - mref[k][sl]).max())
+    check("2x2 metrics equal the single-block metrics (corner ghosts correct)",
+          Jerr < 1e-14 and merr < 1e-14,
+          f"max|J-Jref| {Jerr:.2e}, max|metric-ref| {merr:.2e} on a warped grid")
+
+    parts22 = {ix22[(i, j)]: fld[i*nhx:(i+1)*nhx, j*nhy:(j+1)*nhy, :]
+               for i in range(2) for j in range(2)}
+    perr = 0.0
+    for (i, j), b in ix22.items():
+        pf, lo, hi = d22.pad_field(b, parts22, width=2)
+        core = tuple(slice(lo[a], pf.shape[a] - hi[a]) for a in range(3))
+        perr = max(perr, np.abs(pf[core] - parts22[b]).max())
+        # a CORNER ghost: one step beyond in both x and y at once
+        gc = pf[lo[0] + nhx, lo[1] + nhy, core[2]]
+        want = np.roll(np.roll(fld, -(i*nhx + nhx), axis=0), -(j*nhy + nhy), axis=1)[0, 0]
+        perr = max(perr, np.abs(gc - want).max())
+    check("2x2 field padding is correct INCLUDING corner ghosts", perr < 1e-14,
+          f"max |ghost - single-block value| = {perr:.2e} (corner = one step beyond in x AND y)")
+
+    for (i, j), b in ix22.items():
+        sub = lambda f: {ix22[(a, c)]: f[a*nhx:(a+1)*nhx, c*nhy:(c+1)*nhy, :]
+                         for a in range(2) for c in range(2)}
+        F = d22.face_fluxes(b, sub(uu), sub(vv), sub(ww))
+        Jb, _ = d22.block_metrics(b)
+        db = d22.divergence(b, F, Jb)
+        sl = (slice(i*nhx, (i+1)*nhx), slice(j*nhy, (j+1)*nhy), slice(None))
+        ferr = max(ferr, np.abs(db - dref[sl]).max())
+    check("2x2 seam divergence equals the single-block divergence", ferr < 1e-13,
+          f"max |div - single| = {ferr:.2e}")
+
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")
     sys.exit(0 if n_pass == len(results) else 1)

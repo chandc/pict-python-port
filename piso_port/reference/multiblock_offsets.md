@@ -500,6 +500,34 @@ chorin/`picard_iters=1` single-block run while relying on the constructor's defa
 multi-block side. They now state their configuration explicitly. A test that inherits a default
 is a test that silently changes meaning when the default does.
 
+### Multi-axis connections: recursive padding
+
+`pad_coords` and `pad_field` are now **recursive**, so a block may be connected on any number of
+axes. Padding axis 1 requires the neighbour's data **already padded along axis 0**, or the corner
+ghosts are missing — and the array extents do not even match, so it fails loudly rather than
+silently. `upto(bb, k)` returns block `bb` padded along the first `k` axes, memoised so the cost
+is O(blocks × axes) rather than branching.
+
+Verified on a **2×2 topology** — split in both $x$ and $y$, so every block is connected on two
+axes, which a strip of blocks never exercises:
+
+| | vs single block |
+|---|---|
+| metrics and Jacobian (warped) | **0.00e+00** |
+| field padding incl. **corner** ghosts | **0.00e+00** |
+| seam divergence | 9.44e-16 |
+
+The corner check is the one that matters: it reads one step beyond in $x$ **and** $y$ at once,
+which is precisely what the old one-axis implementation could not produce.
+
+This was the hard blocker for real geometry. PICT's vortex-street sample uses 8 blocks around
+the obstacle and every edge block is connected on two axes; the previous implementation would
+have refused the topology outright.
+
+> Written gate-first, as planned: the 2×2 test was written *before* the recursive padding and
+> confirmed failing (4 validate problems, and `block_metrics` raising on the extent mismatch).
+> A gate written after the fix only proves the fix runs.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*

@@ -181,15 +181,6 @@ class Domain:
                 problems.append(str(e)); continue
             if len(set(ga.tolist()) & set(gb.tolist())):
                 problems.append(f"{c}: a cell is connected to itself")
-        for bi, blk in enumerate(self.blocks):
-            na = sum(1 for a in range(3)
-                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1)))
-            if na > 1:
-                problems.append(
-                    f"block {bi} has connections on {na} axes. pad_coords currently supports at "
-                    f"most one connected axis per block: the corner ghosts would need the "
-                    f"neighbour's coordinates padded along the other connected axis, which is "
-                    f"not implemented. Reported rather than silently mis-padded.")
         # No node may be stored by both blocks. Checking the SPACING against 1/n is wrong --
         # a connected axis's spacing is set by the GLOBAL cell count across all blocks in that
         # direction, not by one block's count -- so the invariant is stated directly on the
@@ -277,188 +268,99 @@ class Domain:
         """
         Coordinates of block b ghost-padded across every periodic/connected face.
 
-        Returns (xp, yp, zp, lo, hi) with lo/hi the per-axis pad widths actually applied. Wall
-        faces are NOT padded -- there is nothing beyond them and the metric formula falls back
-        to one-sided differences there, exactly as the single-block code does.
+        RECURSIVE, so a block may be connected on any number of axes. Padding axis 1 needs the
+        neighbour's coordinates ALREADY PADDED along axis 0, or the corner ghosts are missing
+        and the extents do not even match. `upto(bb, k)` returns block bb padded along the
+        first k axes, memoised so the recursion costs O(blocks x axes) rather than branching.
 
-        Both sides of an axis are read BEFORE either is attached. Padding side 0 and then
-        reading side 1 from the modified array makes the upper ghosts a copy of the lower ones,
-        which is silent and produces a plausible-looking but wrong Jacobian.
+        An earlier version padded connected axes first from UNPADDED neighbours and supported
+        one connected axis only. That is enough for a strip of blocks and useless for any real
+        topology: a bluff-body mesh has edge blocks connected on two axes.
 
-        LIMITATION: at most ONE connected axis per block. Two would need the neighbour's
-        coordinates themselves padded along the other connected axis (recursive padding), which
-        is not implemented; validate() reports it rather than mis-padding the corners.
+        Wall faces are NOT padded -- there is nothing beyond them and the metric formula falls
+        back to one-sided differences, exactly as the single-block code does.
         """
-        blk = self.blocks[b]
-        fields = [blk.x.copy(), blk.y.copy(), blk.z.copy()]
-        lo, hi = [0, 0, 0], [0, 0, 0]
+        order = (0, 1, 2)
+        memo = {}
 
-        # Connected axes first, while every block still has its original extents so a
-        # neighbour's face layer matches this block's face. Periodic axes then wrap the
-        # already-padded field, which is what fills the corners correctly.
-        conn_axes = [a for a in range(3)
-                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1))]
-        for axis in conn_axes + [a for a in range(3) if a not in conn_axes]:
-            g = {}
-            for side in (0, 1):
-                g[side] = self._ghost_layers(b, face_id(axis, side), width, src=fields)
-            if g[0] is None and g[1] is None:
-                continue
-            new_fields = []
-            for comp in range(3):
-                parts = []
-                if g[0] is not None:
-                    parts.append(np.moveaxis(g[0][comp][::-1], 0, axis))   # farthest-first
-                parts.append(fields[comp])
-                if g[1] is not None:
-                    parts.append(np.moveaxis(g[1][comp], 0, axis))
-                new_fields.append(np.concatenate(parts, axis=axis))
-            fields = new_fields
-            if g[0] is not None:
-                lo[axis] = width
-            if g[1] is not None:
-                hi[axis] = width
+        def upto(bb, k):
+            key = (bb, k)
+            if key in memo:
+                return memo[key]
+            blk = self.blocks[bb]
+            if k == 0:
+                res = ([blk.x.copy(), blk.y.copy(), blk.z.copy()], [0, 0, 0], [0, 0, 0])
+            else:
+                base, lo0, hi0 = upto(bb, k - 1)
+                lo, hi = list(lo0), list(hi0)
+                axis = order[k - 1]
+                fields = [f for f in base]
+                g = {}
+                for side in (0, 1):
+                    g[side] = self._ghost_coords(bb, face_id(axis, side), width, fields,
+                                                 upto, k - 1)
+                if g[0] is not None or g[1] is not None:
+                    out = []
+                    for comp in range(3):
+                        parts = []
+                        if g[0] is not None:
+                            parts.append(np.moveaxis(g[0][comp][::-1], 0, axis))
+                        parts.append(fields[comp])
+                        if g[1] is not None:
+                            parts.append(np.moveaxis(g[1][comp], 0, axis))
+                        out.append(np.concatenate(parts, axis=axis))
+                    fields = out
+                    if g[0] is not None:
+                        lo[axis] = width
+                    if g[1] is not None:
+                        hi[axis] = width
+                res = (fields, lo, hi)
+            memo[key] = res
+            return res
+
+        fields, lo, hi = upto(b, 3)
         return fields[0], fields[1], fields[2], lo, hi
 
-    def block_metrics(self, b, width=2):
-        """Jacobian and metrics for block b, with seams resolved by real neighbour data."""
-        from phase1_grid_metrics import _metrics_core
-        blk = self.blocks[b]
-        xp, yp, zp, lo, hi = self.pad_coords(b, width)
-        J, m = _metrics_core(xp, yp, zp, *blk.h)
-        sl = tuple(slice(lo[a] or None, -hi[a] if hi[a] else None) for a in range(3))
-        return J[sl], {k: v[sl] for k, v in m.items()}
-
-    # ------------------------------------------------------------------ global assembly
-
-    def build_diffusion_matrix(self, Js, metrics_list, coefs=None):
+    def _ghost_coords(self, b, fid, width, src, upto, k):
         """
-        The volume-integrated conservative diffusion operator over the WHOLE domain, as ONE
-        sparse matrix -- PICT's design, and the reason it needs no ghost cells: a connection
-        contributes off-diagonal entries between the two blocks' boundary cells exactly as an
-        interior face does within a block, so the coupling is implicit in the linear solve
-        rather than exchanged between steps.
+        Coordinate ghost layers beyond face `fid`, nearest-first, in b's ordering.
 
-        Faces are enumerated once each:
-          * interior faces of every block,
-          * one wrap face per PERIODIC axis of a block (joining its own two ends),
-          * one face per CONNECTION, added from the A side only -- adding it from both would
-            double the coupling and quietly halve the effective diffusion across every seam.
-
-        Each face writes the SAME interpolated coefficient into both rows it touches, so the
-        matrix is symmetric by construction, as in the single-block assembler.
-        """
-        N = self.n_cells
-        rows, cols, vals = [], [], []
-        diag = [np.zeros(b.shape) for b in self.blocks]
-
-        def Jg_of(b, axis):
-            m = metrics_list[b]
-            key = ("xi", "eta", "zeta")[axis]
-            g = m[f"{key}_x"] ** 2 + m[f"{key}_y"] ** 2 + m[f"{key}_z"] ** 2
-            c = 1.0 if coefs is None else coefs[b]
-            return c * Js[b] * g
-
-        for b, blk in enumerate(self.blocks):
-            gid = self.global_ids(b)
-            for axis in range(3):
-                h = blk.h[axis]
-                Jg = Jg_of(b, axis)
-                lo_s = [slice(None)] * 3; lo_s[axis] = slice(0, -1)
-                hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
-                cf = 0.5 * (Jg[tuple(lo_s)] + Jg[tuple(hi_s)]) / h ** 2
-                rows += [gid[tuple(lo_s)].ravel(), gid[tuple(hi_s)].ravel()]
-                cols += [gid[tuple(hi_s)].ravel(), gid[tuple(lo_s)].ravel()]
-                vals += [-cf.ravel(), -cf.ravel()]
-                diag[b][tuple(lo_s)] += cf
-                diag[b][tuple(hi_s)] += cf
-
-                if blk.faces[face_id(axis, 1)] == "periodic":
-                    f0 = [slice(None)] * 3; f0[axis] = 0
-                    fn = [slice(None)] * 3; fn[axis] = -1
-                    cw = 0.5 * (Jg[tuple(fn)] + Jg[tuple(f0)]) / h ** 2
-                    a, c_ = gid[tuple(fn)].ravel(), gid[tuple(f0)].ravel()
-                    rows += [a, c_]; cols += [c_, a]
-                    vals += [-cw.ravel(), -cw.ravel()]
-                    diag[b][tuple(fn)] += cw
-                    diag[b][tuple(f0)] += cw
-
-        for c in self.connections:
-            axis, _ = face_axis_side(c.fa)
-            ha = self.blocks[c.ba].h[axis]
-            oaxis, _ = face_axis_side(c.fb)
-            hb = self.blocks[c.bb].h[oaxis]
-            if not np.isclose(ha, hb, rtol=1e-12):
-                raise ValueError(
-                    f"{c}: computational spacing differs across the seam ({ha:.6g} vs "
-                    f"{hb:.6g}). The face coefficient would be ambiguous.")
-            JgA = Jg_of(c.ba, axis)[face_slice(c.fa)]
-            JgB = c.align(Jg_of(c.bb, oaxis)[face_slice(c.fb)])
-            cf = 0.5 * (JgA + JgB) / ha ** 2
-            ga, gb = self.pair_indices(c)
-            rows += [ga, gb]; cols += [gb, ga]
-            vals += [-cf.ravel(), -cf.ravel()]
-            diag[c.ba][face_slice(c.fa)] += cf
-            diag[c.bb][face_slice(c.fb)] += c.unalign(cf)
-
-        for b in range(len(self.blocks)):
-            rows.append(self.global_ids(b).ravel())
-            cols.append(self.global_ids(b).ravel())
-            vals.append(diag[b].ravel())
-
-        return sparse.coo_matrix((np.concatenate(vals),
-                                  (np.concatenate(rows), np.concatenate(cols))),
-                                 shape=(N, N)).tocsr()
-
-    def pad_field(self, b, fields, width=2):
-        """
-        Ghost-pad a SCALAR FIELD of block b across its periodic/connected faces.
-
-        Same machinery as pad_coords with ONE critical difference: NO PERIOD SHIFT. Coordinates
-        ramp and jump back, so a wrapped coordinate ghost must be displaced by one period.
-        Velocity and pressure are genuinely periodic and must NOT be. Copying the coordinate
-        path verbatim would offset every seam by exactly one period -- a large, smooth, entirely
-        plausible-looking error.
-
-        `width` must cover the widest stencil that will be applied. Central differencing needs
-        1; SOU reaches i-2 and needs 2. Padding with 1 and then applying SOU silently degrades
-        the upwind stencil to first order AT SEAMS ONLY, which no smooth test would reveal.
-
-        Returns (padded, lo, hi) so the caller can strip the ghosts afterwards.
+        `src` is b's own partially padded field; a connected face instead reads the NEIGHBOUR
+        padded along the same axes so far, via upto(nb, k) -- that is what makes the corner
+        ghosts right when a block is connected on more than one axis.
         """
         blk = self.blocks[b]
-        if isinstance(fields, np.ndarray):
-            raise TypeError(
-                "pad_field needs the field for EVERY block, as a dict or list keyed by block "
-                "index -- a connected face reads across the seam. Passing one array cannot "
-                "work, and an earlier cached-state version of this API silently used whichever "
-                "field had been registered last for all three velocity components.")
-        cur = np.asarray(fields[b])
-        if cur.shape != blk.shape:
-            raise ValueError(f"field shape {cur.shape} does not match block {b} {blk.shape}")
-        lo, hi = [0, 0, 0], [0, 0, 0]
-        conn_axes = [a for a in range(3)
-                     if any(blk.faces[face_id(a, s)] == "connected" for s in (0, 1))]
-        for axis in conn_axes + [a for a in range(3) if a not in conn_axes]:
-            g = {}
-            for side in (0, 1):
-                lay = self._ghost_layers_field(b, face_id(axis, side), width, cur,
-                                               fields)
-                g[side] = lay
-            if g[0] is None and g[1] is None:
-                continue
-            parts = []
-            if g[0] is not None:
-                parts.append(np.moveaxis(g[0][::-1], 0, axis))
-            parts.append(cur)
-            if g[1] is not None:
-                parts.append(np.moveaxis(g[1], 0, axis))
-            cur = np.concatenate(parts, axis=axis)
-            if g[0] is not None:
-                lo[axis] = width
-            if g[1] is not None:
-                hi[axis] = width
-        return cur, lo, hi
+        axis, side = face_axis_side(fid)
+        kind = blk.faces[fid]
+
+        if kind == "periodic":
+            out = []
+            for comp, f in enumerate(src):
+                sl = [slice(None)] * 3
+                sl[axis] = slice(0, width) if side == 1 else slice(-width, None)
+                lay = np.moveaxis(f[tuple(sl)], axis, 0)
+                lay = lay if side == 1 else lay[::-1]
+                jump = blk.period[axis] if comp == axis else 0.0
+                out.append(lay + (jump if side == 1 else -jump))
+            return out
+
+        nb = self._neighbour_of(b, fid)
+        if nb is None:
+            return None
+        ob, ofid, to_mine, sh = nb
+        other_fields, olo, ohi = upto(ob, k)
+        oaxis, oside = face_axis_side(ofid)
+        out = []
+        for comp, f in enumerate(other_fields):
+            sl = [slice(None)] * 3
+            sl[oaxis] = slice(olo[oaxis], olo[oaxis] + width) if oside == 0 \
+                else slice(f.shape[oaxis] - ohi[oaxis] - width, f.shape[oaxis] - ohi[oaxis])
+            lay = np.moveaxis(f[tuple(sl)], oaxis, 0)
+            if oside == 1:
+                lay = lay[::-1]
+            lay = np.stack([to_mine(l) for l in lay])
+            out.append(lay + sh[comp])
+        return out
 
     def _ghost_layers_field(self, b, fid, width, cur, fields):
         """Layers of a scalar field beyond face `fid`, in b's ordering. No period shift."""
@@ -709,3 +611,183 @@ class Domain:
                 f[tuple(sl_out)] = cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
             out.append(f)
         return out
+
+    def block_metrics(self, b, width=2):
+        """Jacobian and metrics for block b, with seams resolved by real neighbour data."""
+        from phase1_grid_metrics import _metrics_core
+        blk = self.blocks[b]
+        xp, yp, zp, lo, hi = self.pad_coords(b, width)
+        J, m = _metrics_core(xp, yp, zp, *blk.h)
+        sl = tuple(slice(lo[a] or None, -hi[a] if hi[a] else None) for a in range(3))
+        return J[sl], {k: v[sl] for k, v in m.items()}
+
+    # ------------------------------------------------------------------ global assembly
+
+    def build_diffusion_matrix(self, Js, metrics_list, coefs=None):
+        """
+        The volume-integrated conservative diffusion operator over the WHOLE domain, as ONE
+        sparse matrix -- PICT's design, and the reason it needs no ghost cells: a connection
+        contributes off-diagonal entries between the two blocks' boundary cells exactly as an
+        interior face does within a block, so the coupling is implicit in the linear solve
+        rather than exchanged between steps.
+
+        Faces are enumerated once each:
+          * interior faces of every block,
+          * one wrap face per PERIODIC axis of a block (joining its own two ends),
+          * one face per CONNECTION, added from the A side only -- adding it from both would
+            double the coupling and quietly halve the effective diffusion across every seam.
+
+        Each face writes the SAME interpolated coefficient into both rows it touches, so the
+        matrix is symmetric by construction, as in the single-block assembler.
+        """
+        N = self.n_cells
+        rows, cols, vals = [], [], []
+        diag = [np.zeros(b.shape) for b in self.blocks]
+
+        def Jg_of(b, axis):
+            m = metrics_list[b]
+            key = ("xi", "eta", "zeta")[axis]
+            g = m[f"{key}_x"] ** 2 + m[f"{key}_y"] ** 2 + m[f"{key}_z"] ** 2
+            c = 1.0 if coefs is None else coefs[b]
+            return c * Js[b] * g
+
+        for b, blk in enumerate(self.blocks):
+            gid = self.global_ids(b)
+            for axis in range(3):
+                h = blk.h[axis]
+                Jg = Jg_of(b, axis)
+                lo_s = [slice(None)] * 3; lo_s[axis] = slice(0, -1)
+                hi_s = [slice(None)] * 3; hi_s[axis] = slice(1, None)
+                cf = 0.5 * (Jg[tuple(lo_s)] + Jg[tuple(hi_s)]) / h ** 2
+                rows += [gid[tuple(lo_s)].ravel(), gid[tuple(hi_s)].ravel()]
+                cols += [gid[tuple(hi_s)].ravel(), gid[tuple(lo_s)].ravel()]
+                vals += [-cf.ravel(), -cf.ravel()]
+                diag[b][tuple(lo_s)] += cf
+                diag[b][tuple(hi_s)] += cf
+
+                if blk.faces[face_id(axis, 1)] == "periodic":
+                    f0 = [slice(None)] * 3; f0[axis] = 0
+                    fn = [slice(None)] * 3; fn[axis] = -1
+                    cw = 0.5 * (Jg[tuple(fn)] + Jg[tuple(f0)]) / h ** 2
+                    a, c_ = gid[tuple(fn)].ravel(), gid[tuple(f0)].ravel()
+                    rows += [a, c_]; cols += [c_, a]
+                    vals += [-cw.ravel(), -cw.ravel()]
+                    diag[b][tuple(fn)] += cw
+                    diag[b][tuple(f0)] += cw
+
+        for c in self.connections:
+            axis, _ = face_axis_side(c.fa)
+            ha = self.blocks[c.ba].h[axis]
+            oaxis, _ = face_axis_side(c.fb)
+            hb = self.blocks[c.bb].h[oaxis]
+            if not np.isclose(ha, hb, rtol=1e-12):
+                raise ValueError(
+                    f"{c}: computational spacing differs across the seam ({ha:.6g} vs "
+                    f"{hb:.6g}). The face coefficient would be ambiguous.")
+            JgA = Jg_of(c.ba, axis)[face_slice(c.fa)]
+            JgB = c.align(Jg_of(c.bb, oaxis)[face_slice(c.fb)])
+            cf = 0.5 * (JgA + JgB) / ha ** 2
+            ga, gb = self.pair_indices(c)
+            rows += [ga, gb]; cols += [gb, ga]
+            vals += [-cf.ravel(), -cf.ravel()]
+            diag[c.ba][face_slice(c.fa)] += cf
+            diag[c.bb][face_slice(c.fb)] += c.unalign(cf)
+
+        for b in range(len(self.blocks)):
+            rows.append(self.global_ids(b).ravel())
+            cols.append(self.global_ids(b).ravel())
+            vals.append(diag[b].ravel())
+
+        return sparse.coo_matrix((np.concatenate(vals),
+                                  (np.concatenate(rows), np.concatenate(cols))),
+                                 shape=(N, N)).tocsr()
+
+    def pad_field(self, b, fields, width=2):
+        """
+        Ghost-pad a SCALAR FIELD of block b across its periodic/connected faces.
+
+        RECURSIVE, exactly like pad_coords, so a block connected on several axes gets correct
+        CORNER ghosts. `fields` must hold the array for EVERY block -- a connected face reads
+        across the seam, and an earlier cached-state version silently used whichever component
+        had been registered last for all three velocities.
+
+        ONE CRITICAL DIFFERENCE FROM pad_coords: no period shift. Coordinates ramp and jump
+        back, so a wrapped coordinate ghost must be displaced by one period; velocity and
+        pressure are genuinely periodic and must NOT be. Copying the coordinate path verbatim
+        offsets every seam by exactly one period -- large, smooth, entirely plausible-looking.
+
+        `width` must cover the widest stencil applied: central needs 1, SOU reaches i-2 and
+        needs 2. Padding with 1 then applying SOU degrades the upwind stencil to first order at
+        seams only, which no smooth test reveals.
+        """
+        if isinstance(fields, np.ndarray):
+            raise TypeError(
+                "pad_field needs the field for EVERY block, as a dict or list keyed by block "
+                "index -- a connected face reads across the seam.")
+        order = (0, 1, 2)
+        memo = {}
+
+        def upto(bb, k):
+            key = (bb, k)
+            if key in memo:
+                return memo[key]
+            blk = self.blocks[bb]
+            if k == 0:
+                cur = np.asarray(fields[bb])
+                if cur.shape != blk.shape:
+                    raise ValueError(
+                        f"field shape {cur.shape} does not match block {bb} {blk.shape}")
+                res = (cur.copy(), [0, 0, 0], [0, 0, 0])
+            else:
+                base, lo0, hi0 = upto(bb, k - 1)
+                lo, hi = list(lo0), list(hi0)
+                axis = order[k - 1]
+                g = {}
+                for side in (0, 1):
+                    g[side] = self._ghost_field(bb, face_id(axis, side), width, base, upto,
+                                                k - 1)
+                cur = base
+                if g[0] is not None or g[1] is not None:
+                    parts = []
+                    if g[0] is not None:
+                        parts.append(np.moveaxis(g[0][::-1], 0, axis))
+                    parts.append(base)
+                    if g[1] is not None:
+                        parts.append(np.moveaxis(g[1], 0, axis))
+                    cur = np.concatenate(parts, axis=axis)
+                    if g[0] is not None:
+                        lo[axis] = width
+                    if g[1] is not None:
+                        hi[axis] = width
+                res = (cur, lo, hi)
+            memo[key] = res
+            return res
+
+        cur, lo, hi = upto(b, 3)
+        return cur, lo, hi
+
+    def _ghost_field(self, b, fid, width, src, upto, k):
+        """Field ghost layers beyond face `fid`, nearest-first, in b's ordering. NO shift."""
+        blk = self.blocks[b]
+        axis, side = face_axis_side(fid)
+        kind = blk.faces[fid]
+        if kind == "periodic":
+            sl = [slice(None)] * 3
+            sl[axis] = slice(0, width) if side == 1 else slice(-width, None)
+            lay = np.moveaxis(src[tuple(sl)], axis, 0)
+            return lay if side == 1 else lay[::-1]
+        nb = self._neighbour_of(b, fid)
+        if nb is None:
+            return None
+        ob, ofid, to_mine, _ = nb
+        other, olo, ohi = upto(ob, k)
+        oaxis, oside = face_axis_side(ofid)
+        sl = [slice(None)] * 3
+        sl[oaxis] = slice(olo[oaxis], olo[oaxis] + width) if oside == 0 \
+            else slice(other.shape[oaxis] - ohi[oaxis] - width,
+                       other.shape[oaxis] - ohi[oaxis])
+        lay = np.moveaxis(other[tuple(sl)], oaxis, 0)
+        if oside == 1:
+            lay = lay[::-1]
+        return np.stack([to_mine(l) for l in lay])
+
