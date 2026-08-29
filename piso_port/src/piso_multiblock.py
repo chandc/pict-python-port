@@ -290,11 +290,25 @@ class MultiBlockPISO:
                             # as dt -> 0. This re-injects the face/cell inconsistency the
                             # previous step established, which is itself O(Gamma), making the
                             # ratio -- and the damping -- dt-independent.
+                            from src.multiblock import face_axis_side
                             Fold = d.face_fluxes(b, self.u, self.v, self.w)
                             cf = d.face_interp(b, {bb: coef[bb] / self.dt
                                                    for bb in range(nb)})
-                            Fb[b] = [Fb[b][a] + cf[a] * (self.F_prev[b][a] - Fold[a])
-                                     for a in range(3)]
+                            corr = [cf[a] * (self.F_prev[b][a] - Fold[a]) for a in range(3)]
+                            # A domain boundary face carries a PRESCRIBED flux -- a wall's
+                            # zero, an inflow's profile, an outflow's balanced value. The
+                            # transient term must not touch it, or it injects mass the
+                            # pressure solve cannot remove: measured divF 7.7e-01 and |u|max
+                            # 3.56 against 1.50 on the backward-facing step.
+                            blk = d.blocks[b]
+                            for fid, kind in enumerate(blk.faces):
+                                if kind in ("periodic", "connected"):
+                                    continue
+                                ax, side = face_axis_side(fid)
+                                sl = [slice(None)] * 3
+                                sl[ax] = 0 if side == 0 else blk.shape[ax]
+                                corr[ax][tuple(sl)] = 0.0
+                            Fb[b] = [Fb[b][a] + corr[a] for a in range(3)]
                 divF[b] = d.divergence(b, Fb[b], self.Js[b])
             built = True
             if div_star is None:

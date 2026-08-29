@@ -158,3 +158,78 @@ It is a statement about the **rate** at which error vanishes, not its size at af
 resolution. The Orr-Sommerfeld residual numerical damping is 1.09e-3 / 6.4e-4 / 2.5e-4 at
 $n_y = 97/129/201$ — converging at the design rate, and still comparable to the 2.2e-3 growth
 rate being measured.
+
+---
+
+## 5. Planned work, and what it costs
+
+Two extensions are scoped but not built. Both interact with the Rhie–Chow work in
+[pressure_checkerboard.md](pressure_checkerboard.md), so the interactions are recorded here
+rather than discovered later.
+
+### 5.1 The adjoint, after Rhie–Chow
+
+**Nothing is broken today, for a reason that is itself a hazard.** The adjoint path
+(`src/piso_torch.py`, `src/adjoint_piso.py`) is a *separate implementation*, not a wrapper over
+the NumPy solvers: it builds its own divergence and gradient matrices and never calls
+`face_fluxes` or `pressure_face_fluxes`. So adding Rhie–Chow left it untouched.
+
+The hazard is that the two paths now **discretise differently when `rhie_chow=True`**. Before,
+they agreed in structure — plain-average face flux, wide pressure gradient, both. Train an SGS
+model through the torch path and validate on the NumPy path with the option on, and the two are
+solving different equations. That is exactly the kind of mismatch that surfaces as an
+unexplained a-posteriori gap with no obvious cause. RC defaults off, so nothing is wrong now;
+this must be checked before any learning run turns it on.
+
+Bringing RC into the adjoint is three new gradient paths, and they are not equally cheap:
+
+| path | what it is | cost |
+|---|---|---|
+| `p -> F` | new dependency: F previously depended only on u. `D` is linear in p, so the backward is that operator transposed | cheap |
+| `p_flux` recurrence | `p_flux^{n+1} = p_flux^n + phi` is a new accumulator across steps; the adjoint gains a matching backward accumulator | cheap |
+| `F_prev` recurrence | `ddt_corr` makes step *n* depend on step *n-1*'s converged FLUX, so gradients must propagate backward through time via F as well as u and p | **expensive** |
+
+The third roughly doubles the per-step tape state: three face-flux arrays of ~N each, plus an
+extra recurrence chain in the backward pass. Cost that one first before committing.
+
+**A multi-block consequence of the width-2 fix.** The Rhie–Chow wide gradient now pads to
+width 2 (it had to — a width-1 pad is one-sided exactly at the ghost a seam face needs, which
+broke mass conservation). So the stencil reaches **two cells deep across a seam**, and the
+adjoint scatter at a connection is wider than the existing width-1 machinery assumes. The
+multi-domain adjoint is unbuilt, so this is a design input rather than a repair.
+
+### 5.2 Variable effective viscosity (LES)
+
+The diffusion operator is most of the way there already, by accident of good design.
+`Jg_of` in `build_momentum_matrix` returns `nu * Js[b] * g` — a per-cell array — and every face
+uses `0.5*(Jg[lo] + Jg[hi])`. Make `nu` a per-block array and that line broadcasts, the face
+average becomes the symmetric average of `nu_eff * J * g`, symmetry is preserved **by
+construction**, and it works across seams unchanged. `build_diffusion_matrix` already accepts
+per-block `coefs` arrays and is exercised in that mode by the pressure solve, so the
+variable-coefficient machinery is not merely present but verified.
+
+What remains splits into plumbing and one real physics gap:
+
+* **Plumbing** (~half a day). The deferred cross term `nu * cross`, the rotational correction
+  `- nu * div(u*)`, and the Dong outflow's `nu` are all scalar multiplies that become
+  elementwise.
+* **Physics — the transpose term.** Our operator is `div(nu grad u)`. The full stress is
+  `div(nu_eff (grad u + grad u^T))`. For constant `nu` the transpose part vanishes by
+  continuity; with variable `nu_t` it leaves `grad(nu_t) . (grad u)^T`, which is **not**
+  negligible and has to be added. This is the only part that is new physics rather than
+  threading an array through.
+* **The model itself.** Smagorinsky needs `|S|` from the full velocity-gradient tensor; the
+  curvilinear metrics are all present and `pad_field` handles the seams, so it is assemblable.
+  `Delta = J^(1/3)` is available. The harder pieces are wall damping (needs a wall-distance
+  field, not currently computed) and the dynamic procedure — a test filter crossing seams is
+  feasible with the existing padding, but the homogeneous-direction averaging that makes it
+  stable is case-specific.
+
+**Interaction with Rhie–Chow.** `Gamma = J / rowsum(A)` and A carries the diffusion, so a
+spatially varying `nu_eff` makes `Gamma` vary more sharply than it does today. The Rhie–Chow
+dissipation scales with `Gamma`, so its strength becomes a function of the local eddy
+viscosity — largest where the SGS model is most active. That is probably benign and possibly
+helpful, but it is untested and should be measured, not assumed.
+
+**Precedent.** Upstream PICT does exactly this for its TCF SGS-learning example, so there is a
+reference implementation for the variable-`nu` path if we want one.

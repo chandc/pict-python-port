@@ -255,6 +255,33 @@ Warped channel, `rotational`, amplitude and flip fraction (see below on why both
 
 Identical to four digits across block counts, and |u|max agrees to 2.2e-16.
 
+## Two bugs only a real case found
+
+Every synthetic gate above -- periodic channel, warped duct, warped multi-block -- passed while
+the Armaly backward-facing step **diverged at step 319**. The BFS is the first case with an
+inflow and a convective outflow, and both bugs live at prescribed boundaries.
+
+**1. The O(h^3) argument fails at a boundary.** It assumes `compact` and `wide` are both centred
+second-order approximations of the same derivative, so their difference is small. At a boundary
+cell `np.gradient` falls back to a **one-sided** stencil, and the difference becomes O(1) rather
+than O(h^3). At a wall this is harmless because dp/dn ~ 0; at an inflow the normal pressure
+gradient is large, and the error grew from 5e+01 at step 120 to 4e+02 at step 150 before
+exploding. Localising the peak of |p| is what identified it -- the blow-up sat at the UP block's
+i = 0 inflow face, not at the seam or the step corner where I had expected it. Faces whose wide
+stencil is one-sided now carry no correction.
+
+**2. `ddt_corr` wrote through prescribed boundary faces.** A domain boundary face carries a
+prescribed flux -- a wall's zero, an inflow's profile, an outflow's balanced value. The
+transient term was modifying them, injecting mass the pressure solve cannot remove: divergence
+7.7e-01 and |u|max 3.56 against the correct 1.50. Those faces are now masked out.
+
+With both fixed, all four flag combinations run the BFS with |u|max = 1.500 and divergence
+2.4e-15 to 2.6e-15, against 3.0e-13 for the baseline.
+
+The lesson is the one this file keeps re-learning: the synthetic gates were all periodic or
+walled, and a wall hides the boundary-stencil defect because the pressure gradient normal to it
+is already ~0. Nothing short of a case with a real inflow would have surfaced either bug.
+
 ## Measuring oscillation: neither single number works
 
 Two metrics were tried and both were wrong, in opposite directions.

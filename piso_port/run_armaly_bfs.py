@@ -23,11 +23,16 @@ U_BULK = 1.0
 D_H = 2.0 * H_IN
 
 
-def run(Re=100.0, nx=100, ny_lo=22, ny_up=24, nz=4, dt=0.02, nsteps=400, report=True):
+def run(Re=100.0, nx=100, ny_lo=22, ny_up=24, nz=4, dt=0.02, nsteps=400,
+        report=True, rhie_chow=False):
     nu = U_BULK * D_H / Re
     d, LOW, UP = bfs_domain(nx=nx, ny_lo=ny_lo, ny_up=ny_up, nz=nz)
+    # rhie_chow enables the whole trio (persistent flux, the Rhie-Chow dissipation and the
+    # transient term). They are meaningless apart: the dissipation is O(dt) without the
+    # transient term, so it would fade as the step is refined.
     m = MultiBlockPISO(d, nu, dt, 2, 1e-11, time_scheme="be", scheme="rotational",
-                       picard_iters=1)
+                       picard_iters=1, rhie_chow=rhie_chow,
+                       persistent_flux=rhie_chow, ddt_corr=rhie_chow)
     up, lo = d.blocks[UP], d.blocks[LOW]
 
     # fully developed parabola over the inlet height, bulk U_BULK

@@ -720,10 +720,19 @@ class Domain:
             shape = list(blk.shape); shape[axis] += 1
             f = np.zeros(shape)
             # the wide counterpart of the compact face difference, on the SAME padded field
-            dpw = None
+            dpw = dpw_ok = None
             if rhie_chow:
                 g2 = np.gradient(pp2, blk.h[axis], axis=axis, edge_order=2)
-                dpw = g2[tuple(slice(_off[a], _off[a] + pp.shape[a]) for a in range(3))]
+                sl2 = tuple(slice(_off[a], _off[a] + pp.shape[a]) for a in range(3))
+                dpw = g2[sl2]
+                # Where np.gradient fell back to a ONE-SIDED stencil, `compact - wide` is no
+                # longer the O(h^3) difference of two centred second-order approximations --
+                # it is an O(1) spurious term. Harmless at a wall (dp/dn ~ 0) and fatal at an
+                # inflow, where it grew from 5e+01 to 4e+02 over 30 steps and then diverged.
+                # Mark those cells and drop the correction on any face that touches one.
+                ok2 = np.ones(pp2.shape[axis], bool); ok2[0] = ok2[-1] = False
+                shp = [1, 1, 1]; shp[axis] = pp.shape[axis]
+                dpw_ok = ok2[_off[axis]:_off[axis] + pp.shape[axis]].reshape(shp)
             core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
             ccore = [slice(glo[a], glo[a] + blk.shape[a]) for a in range(3)] \
                 if include_cross else None
@@ -741,8 +750,13 @@ class Domain:
                     cf = 0.5 * (Jg[tuple(s1)] + Jg[tuple(s2)])
                     val = val + cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
                     if rhie_chow:
-                        val = val - 0.5 * (Jg[tuple(s1)] * dpw[tuple(s1)]
-                                           + Jg[tuple(s2)] * dpw[tuple(s2)])
+                        good = (np.take(dpw_ok, a_lo, axis=axis).all()
+                                and np.take(dpw_ok, a_hi, axis=axis).all())
+                        if good:
+                            val = val - 0.5 * (Jg[tuple(s1)] * dpw[tuple(s1)]
+                                               + Jg[tuple(s2)] * dpw[tuple(s2)])
+                        else:
+                            val = 0.0 * val   # no valid wide stencil -> no correction here
                 if include_cross:
                     c1 = list(ccore); c1[axis] = glo[axis] + k - 1
                     c2 = list(ccore); c2[axis] = glo[axis] + k
