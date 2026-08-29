@@ -159,13 +159,15 @@ if __name__ == "__main__":
         check(f"{scheme}/{ts} decay rate converges above order {floor}",
               order > floor, f"observed {order:.2f} (design order {want:.0f})")
 
-    # Why BDF2 measures ~1.7 here and 2.01 in the doubly-periodic case (test_stokes_growth.py):
-    # rotational incremental projection is second order in the velocity L2 norm but only
-    # O(dt^3/2) in the pressure and in the near-wall splitting error (Guermond & Shen). With
-    # periodic boundaries that term is absent, so the scheme shows its clean design order; the
-    # no-slip walls here expose it. The gate is therefore "clearly better than first order"
-    # rather than "equal to 2" -- lowering it to 2.0 would be asserting something the method
-    # does not deliver with walls, and raising BE's floor would be equally dishonest.
+    # BDF2 measures ~1.68 on the triple used above and 2.01 in the doubly-periodic case. That
+    # gap is NOT an order loss: extending the sweep to finer dt gives ratios 1.74 / 3.20 / 4.00
+    # for the triples (4e-4,2e-4,1e-4) / (2e-4,1e-4,5e-5) / (1e-4,5e-5,2.5e-5), i.e. orders
+    # 0.80 / 1.68 / 2.00. The scheme IS second order in time with walls; the triple here is
+    # simply pre-asymptotic, which is why the gate is a floor rather than an equality.
+    # An earlier version of this comment attributed the shortfall to the O(dt^3/2) near-wall
+    # splitting error of rotational projection. That explanation was plausible and wrong -- see
+    # test_chan_channel.py, where an independent spectral-element solver reports 1.94-1.99 on
+    # this exact problem and prompted the re-check.
 
     n_pass = sum(results)
     print(f"\n{'='*74}\n  {n_pass}/{len(results)} checks passed\n{'='*74}")

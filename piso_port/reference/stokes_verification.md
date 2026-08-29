@@ -154,18 +154,33 @@ The Chebyshev solve is the trustworthy route and is what the test uses.
 
 Spatial order **2.07, 2.11, 2.35**.
 
-**Temporal order — and an order loss the periodic case cannot see:**
+**Temporal order:**
 
 | scheme | walled | periodic (Case A) |
 |---|---|---|
 | chorin / BE | 0.93 | 0.99 |
-| rotational / BDF2 | **1.68** | **2.01** |
+| rotational / BDF2 | **2.00** | **2.01** |
 
-Rotational incremental projection is second order in the velocity $L^2$ norm but only
-$O(\Delta t^{3/2})$ in the pressure and near-wall splitting error (Guermond & Shen). With
-periodic boundaries that term is absent and the scheme shows its clean design order; the no-slip
-walls expose it. **The scheme does not deliver second order in time for wall-bounded flow**, and
-no periodic test can reveal that.
+**CORRECTION.** This table previously reported **1.68** for the walled case and claimed the
+scheme "is not second order in time for wall-bounded flow", attributing the shortfall to the
+$O(\Delta t^{3/2})$ near-wall splitting error of rotational incremental projection
+(Guermond & Shen). **That was wrong.** The 1.68 came from a single Richardson triple measured
+outside the asymptotic range. Extending the sweep shows a clean approach to 2:
+
+| triple ($\Delta t$) | 4e-4, 2e-4, 1e-4 | 2e-4, 1e-4, 5e-5 | 1e-4, 5e-5, 2.5e-5 |
+|---|---|---|---|
+| ratio | 1.74 | 3.20 | **4.00** |
+| order | 0.80 | 1.68 | **2.00** |
+
+The scheme **is** second order in time with no-slip walls. The error was the same one already
+made and fixed for the *spatial* order in §2.3 (rates 1.76/1.89/1.95 were pre-asymptotic there
+too) — and having caught it once, it should have been checked here rather than explained away
+with a plausible mechanism. A physical explanation for a shortfall is worth nothing until the
+measurement is shown to be converged.
+
+Found by replicating an independent spectral-element solver on this exact problem
+(`test_chan_channel.py`), which reported a fitted temporal slope of 1.94–1.99 and prompted the
+re-check.
 
 ---
 
@@ -270,7 +285,7 @@ error converging at the design rate.
 **Established.** The solver reproduces the Stokes spectrum: closed-form eigenvalues to 0.1–1% in
 a periodic box, and a wall-bounded eigenvalue with no closed form to 4.7e-4. Spatial accuracy is
 second order against an exact eigenvalue (1.91–2.35 across four independent studies). Temporal
-accuracy is second order for periodic flow and **~1.7 with walls**. There is no numerical
+accuracy is second order both periodic and walled (2.01 and 2.00). There is no numerical
 dissipation floor.
 
 **Not established.** These are all *linear* tests — the convective term is deliberately

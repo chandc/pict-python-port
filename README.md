@@ -44,7 +44,7 @@ validate each one before moving on.
 | Inviscid energy conservation, central | **1e-16** — exact to round-off |
 | Inviscid energy loss, SOU | **10.35%** of E per turnover on a broadband field |
 | Adjoint vs finite differences | agrees to **~7 digits** through a full PISO step |
-| Automated checks | **136**, all passing |
+| Automated checks | **140**, all passing |
 
 <p align="center"><img src="images/cavity_2d_vs_ghia.png" width="88%"></p>
 
@@ -133,9 +133,14 @@ Reproduced to **4.7e-4** at 65x48, spatial order 2.07/2.11/2.35.
 
 Three findings, none of which the periodic case alone could produce:
 
-- **The scheme is *not* second order in time for wall-bounded flow** — **1.68** with no-slip
-  walls versus **2.01** periodic. That is the $O(\Delta t^{3/2})$ near-wall splitting error of
-  rotational incremental projection, and no periodic test can expose it.
+- **~~The scheme is not second order in time for wall-bounded flow~~ — RETRACTED.** This
+  previously read "1.68 with walls versus 2.01 periodic", blamed on the $O(\Delta t^{3/2})$
+  near-wall splitting error of rotational projection. It was wrong: 1.68 came from one
+  Richardson triple measured outside the asymptotic range. Refining gives orders
+  **0.80 → 1.68 → 2.00** across successively finer triples, so the scheme **is** second order in
+  time with walls. Caught by replicating an independent spectral-element solver
+  ([`test_chan_channel.py`](piso_port/test_chan_channel.py)) that reported 1.94–1.99 on this
+  exact problem. A plausible physical explanation made a measurement artifact look settled.
 - **The spatial and temporal errors have opposite signs** (spatial over-damps, temporal
   under-damps). In the 5x5 error matrix the single best entry is the **coarsest** time step at
   the finest grid, and refining $\Delta t$ from there nearly doubles the error. Single-parameter
@@ -295,6 +300,7 @@ uv run stokes_decay_study.py               #  decay + decay rate over a 100x amp
 uv run stokes_error_matrix.py              #  5x5 error matrix in (resolution, dt)
 uv run test_energy_conservation.py         #  6 checks: inviscid KE conservation (central vs SOU)
 uv run test_multiblock.py                  # 19 checks: indexing, seam metrics, global matrix + solve
+uv run test_chan_channel.py                #  4 checks: replicates an independent SEM solver (Chan 1996)
 
 # --- differentiability
 uv run --with torch adjoint_piso.py            # adjoint identity + FD gradient check
