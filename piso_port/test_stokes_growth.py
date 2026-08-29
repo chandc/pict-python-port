@@ -28,7 +28,7 @@ a 100x smaller amplitude -- if convection were contaminating the rate, sigma wou
 import sys, warnings, io, contextlib
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 NU, AMP = 0.01, 1e-4
 results = []

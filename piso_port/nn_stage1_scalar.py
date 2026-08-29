@@ -17,9 +17,9 @@ import sys
 import numpy as np
 import torch
 
-from adjoint_piso import MiniPISO, LinearSolve, csr_pattern
+from src.adjoint_piso import MiniPISO, LinearSolve, csr_pattern
 import scipy.sparse as sparse
-from phase3_momentum import build_momentum_matrix_7point, build_conservative_diffusion_matrix
+from src.phase3_momentum import build_momentum_matrix_7point, build_conservative_diffusion_matrix
 
 
 class ForcedPISO(MiniPISO):

@@ -22,8 +22,8 @@ plausible-looking field rather than an obvious failure:
      make an inconsistent pair of operators agree.
 """
 import numpy as np, sys, warnings; warnings.filterwarnings("ignore")
-from multiblock import Block, Connection, Domain, face_id, FACE_NAMES
-from piso_multiblock import MultiBlockPISO
+from src.multiblock import Block, Connection, Domain, face_id, FACE_NAMES
+from src.piso_multiblock import MultiBlockPISO
 
 # 8 blocks around a square hole -- the vortex-street topology.
 #

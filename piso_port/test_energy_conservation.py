@@ -33,9 +33,9 @@ converges away under refinement fast enough to leave an SGS model something to d
 import sys, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from phase1_grid_metrics import make_grid, compute_numerical_metrics
-from phase2_operators import compute_divergence
-from phase3_momentum import build_momentum_matrix_7point
+from src.phase1_grid_metrics import make_grid, compute_numerical_metrics
+from src.phase2_operators import compute_divergence
+from src.phase3_momentum import build_momentum_matrix_7point
 
 results = []
 def check(name, good, detail):
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     print("the expected split -- an energy-conserving scheme with no SGS model piles energy at")
     print("the grid scale, and that pile is exactly what a closure is meant to remove.")
     import io, contextlib
-    from piso_numpy_3d import PISOSolver
+    from src.piso_numpy_3d import PISOSolver
     T_RES = 0.1
     print(f"\n   {'scheme':>9} {'n':>4} {'E(T)/E(0)':>11} {'per turnover':>14}")
     lo = {}

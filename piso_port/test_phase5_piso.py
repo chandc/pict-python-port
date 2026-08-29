@@ -16,8 +16,8 @@ import warnings
 import numpy as np
 warnings.filterwarnings("ignore")
 
-from piso_numpy_3d import PISOSolver
-from phase5_fluxes import compute_face_fluxes, divergence_from_fluxes
+from src.piso_numpy_3d import PISOSolver
+from src.phase5_fluxes import compute_face_fluxes, divergence_from_fluxes
 
 results = []
 def check(name, ok, detail):

@@ -29,8 +29,8 @@ Verified before use: walls at 0 and 1 to 0.0e+00, GCL ~1e-13, min(J) > 0 through
 import sys, time, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
 from test_duct import duct_exact, NU, G, NX
 
 results = []

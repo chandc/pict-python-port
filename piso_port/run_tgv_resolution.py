@@ -1,7 +1,7 @@
 """Grid-resolution study for the 3D TGV energy budget: is 48^3 converged?"""
 import numpy as np, time, warnings
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 from run_tgv3d import tgv_init, diagnostics
 
 NU, DT, T_END = 0.01, 0.005, 2.0
@@ -23,5 +23,5 @@ for N in (32, 48, 64):
     rel = np.abs(-dEdt - phys)[m] / np.abs(phys)[m]
     print(f"  N={N}: E(2)={Es[-1]:.6e}  numerical dissipation {rel.mean()*100:.2f}%  "
           f"({time.time()-t0:.0f}s)", flush=True)
-np.savez("tgv_resolution.npz", nu=NU, **out)
+np.savez("results/tgv_resolution.npz", nu=NU, **out)
 print("saved tgv_resolution.npz")

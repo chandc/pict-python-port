@@ -21,8 +21,8 @@ import sys
 import numpy as np
 import scipy.sparse.linalg as splinalg
 
-from phase1_grid_metrics import analytical_wavy_grid_mms, compute_numerical_metrics
-from phase3_momentum import (get_mms_taylor_green, build_momentum_matrix_7point,
+from src.phase1_grid_metrics import analytical_wavy_grid_mms, compute_numerical_metrics
+from src.phase3_momentum import (get_mms_taylor_green, build_momentum_matrix_7point,
                              build_conservative_diffusion_matrix, compute_cross_diffusion,
                              boundary_masks, solve_momentum)
 

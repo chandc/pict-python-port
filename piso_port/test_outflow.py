@@ -24,9 +24,9 @@ in any steady test, so these tests use 'rotational'.
 import sys, warnings, io, contextlib
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
-from outflow import Outflow, boundary_flux_totals
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
+from src.outflow import Outflow, boundary_flux_totals
 
 NU, UMAX, L = 0.05, 1.0, 4.0
 results = []

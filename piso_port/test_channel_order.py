@@ -18,7 +18,7 @@ Temporal order: hold ny fixed, refine dt against a SAME-GRID numerical reference
 import sys, warnings, io, contextlib
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 NU, G, L, NSPAN = 0.1, 0.8, 1.0, 4
 T_END = 0.2

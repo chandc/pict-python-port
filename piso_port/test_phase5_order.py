@@ -18,7 +18,7 @@ stay above it.
 import sys, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 K = 2 * np.pi
 def tg(x, y, z, t, nu):

@@ -12,11 +12,10 @@ import numpy as np
 import torch
 warnings.filterwarnings("ignore")
 
-from piso_torch import DifferentiablePISO
-from sgs_net import TinySGSNet
-from rollout import rollout
-import adjoint_piso
-
+from src.piso_torch import DifferentiablePISO
+from src.sgs_net import TinySGSNet
+from src.rollout import rollout
+from src import adjoint_piso
 torch.set_default_dtype(torch.float64)
 ok = True
 def check(name, good, detail):

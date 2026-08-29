@@ -8,7 +8,7 @@ Resolution in x-z matches Ghia's 129x129.
 """
 import numpy as np, time, warnings
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 N, NY, DT = 129, 4, 0.02
 cases = [("Re100_sou", 0.01, "sou"), ("Re100_central", 0.01, "central"), ("Re400_sou", 0.0025, "sou")]
@@ -32,5 +32,5 @@ for tag, nu, conv in cases:
     j = 0
     out[f"{tag}_u"] = s.u[:, j, :]; out[f"{tag}_w"] = s.w[:, j, :]
     out[f"{tag}_x"] = s.x[:, j, :]; out[f"{tag}_z"] = s.z[:, j, :]
-np.savez("cavity_2d.npz", N=N, **out)
+np.savez("results/cavity_2d.npz", N=N, **out)
 print("saved cavity_2d.npz")

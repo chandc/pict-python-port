@@ -1,7 +1,7 @@
 """Cartesian (unwarped) cavity runs at Re=100 to isolate warp vs 3D effects."""
 import numpy as np, time, warnings
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 out = {}
 for tag, N, warp in [("cart40", 40, 1e-9)]:
@@ -21,5 +21,5 @@ for tag, N, warp in [("cart40", 40, 1e-9)]:
     out[f"{tag}_u"], out[f"{tag}_w"] = s.u, s.w
     out[f"{tag}_x"], out[f"{tag}_z"] = s.x, s.z
     out[f"{tag}_N"] = N
-np.savez("cavity_cart40.npz", **out)
+np.savez("results/cavity_cart40.npz", **out)
 print("saved cavity_cart40.npz")

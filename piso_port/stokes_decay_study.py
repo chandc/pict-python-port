@@ -15,8 +15,8 @@ magnitude in energy -- that drift is what a long integration exposes and a short
 import io, contextlib, time, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
 from test_stokes_channel import stokes_mode, ALPHA, NU, AMP, SIGMA_REF
 
 DROP = 100.0                                   # amplitude drop
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         print(f"   {dt:9.2e} {d['nsteps']:6d} {np.sqrt(d['E'][-1]/d['E'][0]):10.5f}"
               f" {sg:14.6f} {abs(sg/SIG_EX-1):9.2e} {drift:+9.2e} {d['wall']:7.1f}s")
 
-    np.savez("stokes_decay_study.npz",
+    np.savez("results/stokes_decay_study.npz",
              **{f"grid{i}_{k}": v for i, d in enumerate(grid) for k, v in d.items()},
              **{f"dt{i}_{k}": v for i, d in enumerate(tstep) for k, v in d.items()},
              nys=np.array(NYS), dts=np.array(DTS), sig=SIG_EX, dt_g=DT_G, ny_t=NY_T)

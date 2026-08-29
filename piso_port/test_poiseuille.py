@@ -26,7 +26,7 @@ TWO cases, because the classic one cannot measure an order:
 import sys, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 NU, NSPAN, DT = 0.1, 4, 0.5
 results = []

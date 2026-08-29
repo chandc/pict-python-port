@@ -25,7 +25,7 @@ Gates:
 import sys, time, warnings, io, contextlib
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 results = []
 def check(name, good, detail):
@@ -108,8 +108,8 @@ check("tested warps use untangled grids", all(
 # a comment, since silently feeding a non-symmetric operator to CG is exactly the kind of bug
 # that produces a plausible-looking wrong answer.
 print("\nOperator symmetry by boundary condition (12^3, warp 0.10)")
-from phase5_fluxes import pressure_face_fluxes, divergence_from_fluxes
-from phase3_momentum import build_conservative_diffusion_matrix
+from src.phase5_fluxes import pressure_face_fluxes, divergence_from_fluxes
+from src.phase3_momentum import build_conservative_diffusion_matrix
 rng = np.random.default_rng(0)
 sym = {}
 for label, per in (("all periodic", (True, True, True)),

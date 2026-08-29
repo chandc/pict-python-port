@@ -4,8 +4,8 @@ assembly code, so the document cannot drift away from the implementation.
 """
 import sys
 import numpy as np
-from phase3_momentum import _convection_coefs, build_conservative_diffusion_matrix
-from phase5_fluxes import divergence_from_fluxes
+from src.phase3_momentum import _convection_coefs, build_conservative_diffusion_matrix
+from src.phase5_fluxes import divergence_from_fluxes
 
 ok = True
 def check(name, got, want, tol=1e-12):

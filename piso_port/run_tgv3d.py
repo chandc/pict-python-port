@@ -17,8 +17,8 @@ baseline to learn against.
 """
 import numpy as np, time, warnings, sys
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import deriv
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import deriv
 
 K = 2 * np.pi
 
@@ -68,5 +68,5 @@ if __name__ == "__main__":
         out[f"{conv}_Z"] = np.array(Zs); out[f"{conv}_div"] = np.array(divs)
         print(f"  {conv} DONE  E: {Es[0]:.6f} -> {Es[-1]:.6f}   max divF={max(divs):.2e} "
               f"{time.time()-t0:.0f}s", flush=True)
-    np.savez("tgv3d.npz", N=N, nu=NU, dt=DT, **out)
+    np.savez("results/tgv3d.npz", N=N, nu=NU, dt=DT, **out)
     print("saved tgv3d.npz")

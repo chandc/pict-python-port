@@ -14,8 +14,8 @@ of 0.04 for a scheme that is ~1.7 here).
 import io, contextlib, time, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
 from test_stokes_channel import stokes_mode, ALPHA, NU, AMP
 
 SIG_EX, PHI, DPHI = stokes_mode()
@@ -65,7 +65,7 @@ if __name__ == "__main__":
             S[i, j], nx = sigma(ny, dt)
             row.append(f"{abs(S[i,j]-SIG_EX):12.3e}")
         print(f"  {ny:4d}   " + "".join(row) + f"   [{time.time()-t0:6.0f}s]", flush=True)
-    np.savez("stokes_error_matrix.npz", S=S, nys=np.array(NYS), dts=np.array(DTS), sig=SIG_EX)
+    np.savez("results/stokes_error_matrix.npz", S=S, nys=np.array(NYS), dts=np.array(DTS), sig=SIG_EX)
 
     err = np.abs(S - SIG_EX)
     print("\n  relative error |sigma_num/sigma_exact - 1|")

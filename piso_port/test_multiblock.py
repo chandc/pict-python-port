@@ -13,9 +13,9 @@ path, unchanged.
 import sys, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from multiblock import (Block, Connection, Domain, face_id, face_slice, FACE_NAMES,
+from src.multiblock import (Block, Connection, Domain, face_id, face_slice, FACE_NAMES,
                         tangential_axes)
-from phase1_grid_metrics import compute_numerical_metrics
+from src.phase1_grid_metrics import compute_numerical_metrics
 
 results = []
 def check(name, good, detail):
@@ -141,8 +141,8 @@ if __name__ == "__main__":
     # The sharpest form of the test: warp the grid, split it, and require the per-block metrics
     # computed through the connection map to equal the single-block metrics EXACTLY. Any error
     # in the orientation transform, the period shift, or the ghost ordering shows up here.
-    from phase1_grid_metrics import make_grid, compute_numerical_metrics
-    from phase2_operators import compute_divergence
+    from src.phase1_grid_metrics import make_grid, compute_numerical_metrics
+    from src.phase2_operators import compute_divergence
     NTOT, NY, NZ, WARP = 8, 6, 4, 0.08
     P3 = (True, True, True)
     xs, ys, zs, hx, hy, hz = make_grid((NTOT, NY, NZ), warp=WARP, periodic=P3)
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     # A matrix can be right in structure and wrong in the seam coefficients; only a solve
     # exercises the coupling end to end.
     import scipy.sparse.linalg as spla
-    from phase3_momentum import build_conservative_diffusion_matrix
+    from src.phase3_momentum import build_conservative_diffusion_matrix
     Mref = build_conservative_diffusion_matrix(NTOT, NY, NZ, hx, hy, hz, Jref, mref,
                                                periodic=P3)
     rng2 = np.random.default_rng(7)
@@ -361,7 +361,7 @@ if __name__ == "__main__":
     # DOMAIN BOUNDARY, so a connection would receive a PRESCRIBED flux rather than an
     # interpolated one, injecting or losing mass at every seam. Domain.face_fluxes resolves
     # connected faces from real neighbour data, making a seam an ordinary interior face.
-    from phase5_fluxes import compute_face_fluxes, divergence_from_fluxes
+    from src.phase5_fluxes import compute_face_fluxes, divergence_from_fluxes
     Kw = 2 * np.pi
     uu = np.sin(Kw * xs) * np.cos(Kw * ys) * np.cos(Kw * zs)
     vv = -np.cos(Kw * xs) * np.sin(Kw * ys) * np.cos(Kw * zs)
@@ -392,7 +392,7 @@ if __name__ == "__main__":
 
     print("\n11. GLOBAL MOMENTUM MATRIX (convection + diffusion + transient)")
     import scipy.sparse as sp2
-    from phase3_momentum import build_momentum_matrix_7point
+    from src.phase3_momentum import build_momentum_matrix_7point
     NUm, DTm = 0.05, 0.02
     Aref = build_momentum_matrix_7point(NTOT, NY, NZ, Jref, mref, hx, hy, hz, uu, vv, ww,
                                         NUm, periodic=P3, convection="central")
@@ -436,8 +436,8 @@ if __name__ == "__main__":
     # result can be compared against the single-block solver EXACTLY, with no cross terms and
     # no boundary conditions to confound it.
     import io as _io, contextlib as _cl
-    from piso_multiblock import MultiBlockPISO
-    from piso_numpy_3d import PISOSolver
+    from src.piso_multiblock import MultiBlockPISO
+    from src.piso_numpy_3d import PISOSolver
     NTp, NUp, Kp = 8, 0.05, 2 * np.pi
 
     def cart_split(n):
@@ -672,7 +672,7 @@ if __name__ == "__main__":
     #                exact global 7-point matrix as preconditioner
     #   MOMENTUM  -- Domain.cross_diffusion, carried explicitly and iterated (deferred
     #                correction), exactly as the single-block solver does
-    from phase1_grid_metrics import make_grid as _mg
+    from src.phase1_grid_metrics import make_grid as _mg
     NTw, NUw, DTw, Kw2, Ww = 8, 0.05, 0.02, 2 * np.pi, 0.08
     sw = PISOSolver((NTw, NTw, NTw), warp=Ww, nu=NUw, dt=DTw, corrector_steps=2, periodic=P3,
                     scheme="chorin", time_scheme="be", convection="central",
@@ -724,7 +724,7 @@ if __name__ == "__main__":
     # both walls, so the channel stays flat-walled while dy/dxi != 0 keeps it genuinely
     # non-orthogonal. A warp that MOVED the walls would change the geometry rather than the
     # mesh, which is the trap test_duct_implicit.py documents.
-    from phase1_grid_metrics import compute_numerical_metrics as _cnm
+    from src.phase1_grid_metrics import compute_numerical_metrics as _cnm
     NXk, NYk, NZk, NUk, DTk, Gk = 8, 9, 4, 0.1, 0.05, 0.8
 
     def wall_grid(A):
@@ -778,8 +778,8 @@ if __name__ == "__main__":
     # blocks must PARTITION the nodes without duplicating the interface -- 16 nodes into 4
     # blocks of 4, not 5. Overlapping the seam node is what validate() forbids, and it is easy
     # to write by reflex when splitting a linspace.
-    from outflow import Outflow
-    from phase1_grid_metrics import compute_numerical_metrics as _cnm2
+    from src.outflow import Outflow
+    from src.phase1_grid_metrics import compute_numerical_metrics as _cnm2
     NXo, NYo, NZo, NUo, DTo, Lo, UMo = 16, 13, 4, 0.05, 0.02, 4.0, 1.0
     bco = Outflow(axis=0, side=1, kind="convective", U_c=2.0 / 3.0 * UMo)
     so = PISOSolver((NXo, NYo, NZo), warp=1e-9, nu=NUo, dt=DTo, corrector_steps=2,

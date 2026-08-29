@@ -25,7 +25,7 @@ To perfectly satisfy CFD conservation laws, we rewrote the metric calculations u
 ### Visualizing the Grid Warp
 Here are cuts across all three constant indices ($k, j, i$) showing the severe mesh skewness our numerical solvers successfully navigate:
 
-![3 Cuts of the 3D Wavy Grid](/Users/danielchan/.gemini/antigravity-ide/brain/703d4ece-8e8e-4d5d-ab81-a1422e38161f/wavy_grid_3cuts.png)
+![3 Cuts of the 3D Wavy Grid](../figures/wavy_grid_3cuts.png)
 
 ---
 

@@ -17,7 +17,7 @@ interaction non-trivial.
 """
 import numpy as np, time, warnings, sys
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 FINE, COARSE, RATIO = 48, 16, 3
 NU, DT = 0.004, 0.004
@@ -87,6 +87,6 @@ if __name__ == "__main__":
             print(f"  snapshot {k:2d}  |u_bar|max={np.abs(bar[0]).max():.3f}  "
                   f"|sgs|rms={np.sqrt((force[0]**2).mean()):.4f}  ({time.time()-t0:.0f}s)",
                   flush=True)
-    np.savez("sgs_data.npz", inputs=np.array(B), targets=np.array(F),
+    np.savez("results/sgs_data.npz", inputs=np.array(B), targets=np.array(F),
              fine=FINE, coarse=COARSE, nu=NU)
     print(f"saved sgs_data.npz  {len(B)} snapshots of shape {B[0].shape}")

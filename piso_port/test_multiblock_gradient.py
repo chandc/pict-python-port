@@ -21,9 +21,9 @@ measured rather than assumed.
 import sys, io, contextlib, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from multiblock import Block, Connection, Domain, face_id
-from piso_multiblock import MultiBlockPISO
-from piso_numpy_3d import PISOSolver
+from src.multiblock import Block, Connection, Domain, face_id
+from src.piso_multiblock import MultiBlockPISO
+from src.piso_numpy_3d import PISOSolver
 
 NX, NY, NZ = 8, 9, 4
 NU, DT, NSTEP = 0.1, 0.05, 6

@@ -22,7 +22,7 @@ here, which is why chorin was chosen; that constraint no longer applies.
 import sys, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 NU, G, NX, DT = 0.1, 1.0, 4, 0.5
 

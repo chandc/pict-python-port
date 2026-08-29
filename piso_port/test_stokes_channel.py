@@ -27,8 +27,8 @@ import numpy as np
 warnings.filterwarnings("ignore")
 from scipy.linalg import eig
 from scipy.interpolate import BarycentricInterpolator
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
 
 ALPHA, NU, AMP = 1.0, 1.0, 1e-3
 SIGMA_REF = -9.313739

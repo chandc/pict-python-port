@@ -1,7 +1,7 @@
 """Run the 3D lid-driven cavity to steady state and save fields for plotting."""
 import numpy as np, time, warnings
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 
 N, WARP, DT = 24, 0.05, 0.02
 cases = [("Re100", 0.01), ("Re20", 0.05)]
@@ -26,5 +26,5 @@ for tag, nu in cases:
     out[f"{tag}_nu"], out[f"{tag}_du"] = nu, du
 out["x"], out["y"], out["z"] = s.x, s.y, s.z
 out["N"], out["warp"], out["dt"] = N, WARP, DT
-np.savez("cavity_results.npz", **out)
+np.savez("results/cavity_results.npz", **out)
 print("saved cavity_results.npz")

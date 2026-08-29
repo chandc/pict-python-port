@@ -21,9 +21,9 @@ import torch
 import scipy.sparse as sparse
 warnings.filterwarnings("ignore")
 
-from piso_numpy_3d import PISOSolver
-from phase3_momentum import build_conservative_diffusion_matrix
-from adjoint_piso import LinearSolve, csr_pattern
+from src.piso_numpy_3d import PISOSolver
+from src.phase3_momentum import build_conservative_diffusion_matrix
+from src.adjoint_piso import LinearSolve, csr_pattern
 import test_duct as td
 
 torch.set_default_dtype(torch.float64)

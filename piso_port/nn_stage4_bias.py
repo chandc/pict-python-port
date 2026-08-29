@@ -16,9 +16,9 @@ import numpy as np
 import torch
 warnings.filterwarnings("ignore")
 
-from piso_torch import DifferentiablePISO
-from sgs_net import TinySGSNet
-from rollout import rollout
+from src.piso_torch import DifferentiablePISO
+from src.sgs_net import TinySGSNet
+from src.rollout import rollout
 
 torch.set_default_dtype(torch.float64)
 N, NU, DT, K, STEPS = 10, 0.05, 0.05, 2 * np.pi, 5

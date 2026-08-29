@@ -11,11 +11,11 @@ import sys, warnings
 import numpy as np
 import torch
 warnings.filterwarnings("ignore")
-from sgs_net import SGSNet
+from src.sgs_net import SGSNet
 
 torch.set_default_dtype(torch.float32)
 
-d = np.load("sgs_data.npz")
+d = np.load("results/sgs_data.npz")
 X = torch.as_tensor(d["inputs"], dtype=torch.float32)      # (S, 3, n, n, n)
 Y = torch.as_tensor(d["targets"], dtype=torch.float32)
 S = X.shape[0]

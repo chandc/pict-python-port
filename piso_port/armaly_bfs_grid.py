@@ -34,7 +34,7 @@ endpoint is not stored.
 """
 import numpy as np
 
-from multiblock import Block, Connection, Domain, face_id
+from src.multiblock import Block, Connection, Domain, face_id
 
 S, H_IN = 1.0, 1.0612
 H_TOT = S + H_IN                      # 2.0612  -> ER = 1.9423

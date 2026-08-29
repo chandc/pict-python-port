@@ -61,8 +61,8 @@ would predict, for a reason that is understood but not eliminated.
 import sys, io, contextlib, time, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
-from phase1_grid_metrics import compute_numerical_metrics
+from src.piso_numpy_3d import PISOSolver
+from src.phase1_grid_metrics import compute_numerical_metrics
 from orr_sommerfeld import least_stable
 
 RE, ALPHA, AMP = 7500.0, 1.0, 1e-4

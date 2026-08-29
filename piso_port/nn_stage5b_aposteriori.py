@@ -18,12 +18,12 @@ import numpy as np
 import torch
 warnings.filterwarnings("ignore")
 
-from piso_torch import DifferentiablePISO
-from sgs_net import SGSNet
-from rollout import rollout
+from src.piso_torch import DifferentiablePISO
+from src.sgs_net import SGSNet
+from src.rollout import rollout
 
 torch.set_default_dtype(torch.float64)
-d = np.load("sgs_traj.npz")
+d = np.load("results/sgs_traj.npz")
 traj = torch.as_tensor(d["traj"], dtype=torch.float64)      # (T+1, 3, n, n, n)
 n = int(d["coarse"]); NU, DT = float(d["nu"]), float(d["dt"])
 TRAIN_STEPS, LONG_STEPS = 6, 30   # 5x the training horizon, within the 31 stored states

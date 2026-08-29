@@ -11,8 +11,8 @@ import numpy as np
 import torch
 warnings.filterwarnings("ignore")
 
-from piso_torch import DifferentiablePISO
-from sgs_net import TinySGSNet
+from src.piso_torch import DifferentiablePISO
+from src.sgs_net import TinySGSNet
 
 torch.set_default_dtype(torch.float64)
 ok = True

@@ -7,7 +7,7 @@ share the same dt so the two align.
 """
 import numpy as np, time, warnings
 warnings.filterwarnings("ignore")
-from piso_numpy_3d import PISOSolver
+from src.piso_numpy_3d import PISOSolver
 from make_sgs_data import random_solenoidal, box_filter, sgs_force, FINE, COARSE, NU, DT
 
 STEPS, SPINUP = 30, 60
@@ -30,6 +30,6 @@ for k in range(STEPS):
     if k % 10 == 0:
         print(f"  step {k:2d}  |u_bar|max={np.abs(traj[-1][0]).max():.4f} "
               f"({time.time()-t0:.0f}s)", flush=True)
-np.savez("sgs_traj.npz", traj=np.array(traj), sgs=np.array(sgs),
+np.savez("results/sgs_traj.npz", traj=np.array(traj), sgs=np.array(sgs),
          nu=NU, dt=DT, coarse=COARSE)   # exact SGS force -> the achievable floor
 print(f"saved sgs_traj.npz  {len(traj)} consecutive filtered states")
