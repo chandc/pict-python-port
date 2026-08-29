@@ -51,6 +51,39 @@ def tangential_axes(axis):
     return tuple(a for a in range(3) if a != axis)
 
 
+def _match_extent(lay, o_lo, o_hi, my_lo, my_hi, axis, perm=(0, 1)):
+    """
+    Reconcile a ghost layer's tangential extent with the receiving block's.
+
+    Trim-then-pad is NOT the same as adjusting the difference: trimming to the core and then
+    re-padding with edge replication DISCARDS the neighbour's real ghost values wherever both
+    blocks were padded, which silently corrupts every seam in a uniform topology. Only the
+    MISMATCH is adjusted here: where the neighbour has more padding it is trimmed, where it has
+    less the deficit is filled by edge replication.
+
+    That replication is only reached at a reentrant corner of an obstacle, where the two blocks
+    either side of a connection carry different padding because one of them abuts the solid
+    body. Those cells lie geometrically inside the obstacle, so no exact value exists.
+    """
+    tang = [a for a in range(3) if a != axis]
+    otang = [tang[perm[0]], tang[perm[1]]]
+    pre, post = [(0, 0)] * lay.ndim, [slice(None)] * lay.ndim
+    need_pad = need_trim = False
+    for pos, (ma, oa) in enumerate(zip(tang, otang)):
+        dlo, dhi = my_lo[ma] - o_lo[oa], my_hi[ma] - o_hi[oa]
+        lo_t = -dlo if dlo < 0 else 0
+        hi_t = -dhi if dhi < 0 else 0
+        if lo_t or hi_t:
+            post[pos + 1] = slice(lo_t or None, -hi_t if hi_t else None); need_trim = True
+        if dlo > 0 or dhi > 0:
+            pre[pos + 1] = (max(dlo, 0), max(dhi, 0)); need_pad = True
+    if need_trim:
+        lay = lay[tuple(post)]
+    if need_pad:
+        lay = np.pad(lay, pre, mode="edge")
+    return lay
+
+
 class Connection:
     """
     Joins face `fa` of block index `ba` to face `fb` of block index `bb`.
@@ -298,7 +331,7 @@ class Domain:
                 g = {}
                 for side in (0, 1):
                     g[side] = self._ghost_coords(bb, face_id(axis, side), width, fields,
-                                                 upto, k - 1)
+                                                 upto, k - 1, lo, hi)
                 if g[0] is not None or g[1] is not None:
                     out = []
                     for comp in range(3):
@@ -321,7 +354,7 @@ class Domain:
         fields, lo, hi = upto(b, 3)
         return fields[0], fields[1], fields[2], lo, hi
 
-    def _ghost_coords(self, b, fid, width, src, upto, k):
+    def _ghost_coords(self, b, fid, width, src, upto, k, my_lo, my_hi):
         """
         Coordinate ghost layers beyond face `fid`, nearest-first, in b's ordering.
 
@@ -359,6 +392,7 @@ class Domain:
             if oside == 1:
                 lay = lay[::-1]
             lay = np.stack([to_mine(l) for l in lay])
+            lay = _match_extent(lay, olo, ohi, my_lo, my_hi, axis)
             out.append(lay + sh[comp])
         return out
 
@@ -383,13 +417,27 @@ class Domain:
         lay = np.moveaxis(other[tuple(sl)], oaxis, 0)
         if oside == 1:
             lay = lay[::-1]
-        return np.stack([to_mine(l) for l in lay])
+        lay = np.stack([to_mine(l) for l in lay])
+        return _match_extent(lay, olo, ohi, my_lo, my_hi, axis)
 
 
     # ------------------------------------------------------------------ seam-aware operators
 
+    def block_metrics_cached(self, b):
+        """block_metrics with memoisation -- the geometry is static, so recomputing it every
+        step (and every operator call within a step) was pure waste."""
+        if not hasattr(self, "_bm_cache"):
+            self._bm_cache = {}
+        if b not in self._bm_cache:
+            self._bm_cache[b] = self.block_metrics(b)
+        return self._bm_cache[b]
+
     def padded_geometry(self, b, width=1):
         """Jacobian and metrics on the PADDED block, ghosts retained."""
+        if not hasattr(self, "_pg_cache"):
+            self._pg_cache = {}
+        if (b, width) in self._pg_cache:
+            return self._pg_cache[(b, width)]
         from phase1_grid_metrics import _metrics_core
         blk = self.blocks[b]
         xp, yp, zp, lo, hi = self.pad_coords(b, max(width, 2))
@@ -400,7 +448,9 @@ class Domain:
         sl = tuple(slice(trim[a] or None, -trimh[a] if trimh[a] else None) for a in range(3))
         lo2 = [lo[a] - trim[a] for a in range(3)]
         hi2 = [hi[a] - trimh[a] for a in range(3)]
-        return J[sl], {k: v[sl] for k, v in m.items()}, lo2, hi2
+        out = (J[sl], {k: v[sl] for k, v in m.items()}, lo2, hi2)
+        self._pg_cache[(b, width)] = out
+        return out
 
     def face_fluxes(self, b, us, vs, ws):
         """
@@ -578,33 +628,41 @@ class Domain:
         """
         Pressure flux through each face of block b, seams resolved from the neighbour.
 
-        Mirrors phase5_fluxes.pressure_face_fluxes. The ORTHOGONAL part is
-        c_f (p_N - p_P)/h with c_f the same face-interpolated coefficient the matrix carries,
-        so its discrete divergence is exactly the matrix action. The CROSS part is the
-        cell-centred quantity  sum_{b != axis} coef*J*g^{axis,b} * dp/dxi_b  interpolated to the
-        face -- which needs dp along the OTHER axes, and therefore needs the padded field: a
-        block-local derivative would be one-sided at every seam and wrong there.
+        THE FACE COEFFICIENT IS BUILT AS A PADDED FIELD, not recomputed from padded geometry.
+        That distinction is load-bearing: `build_diffusion_matrix` forms each face coefficient
+        from the two blocks' OWN metrics, so the flux operator must do the same or the two
+        disagree and no pressure field can make the corrected flux solenoidal. Recomputing the
+        metrics from padded COORDINATES fails exactly where those coordinates are extrapolated
+        -- at a reentrant obstacle corner -- and produced a corrected flux divergence of 1.2e-01
+        while the CG solve itself converged happily to 9e-11.
 
-        Domain boundary faces stay zero (Neumann); a CONNECTED face is an interior face.
+        Padding Jg as a field also sidesteps corner ghosts entirely for the orthogonal part: a
+        face coefficient only ever needs the CORE tangential range.
         """
         blk = self.blocks[b]
         pp = self.pad_field(b, ps, 1)[0]
-        cc = self.pad_field(b, coefs, 1)[0]
-        Jp, mp, lo, hi = self.padded_geometry(b, 1)
         KEYS = (("xi_x", "xi_y", "xi_z"), ("eta_x", "eta_y", "eta_z"),
                 ("zeta_x", "zeta_y", "zeta_z"))
 
-        def g_off(a1, a2):
-            ka, kb = KEYS[a1], KEYS[a2]
-            return sum(mp[ka[c]] * mp[kb[c]] for c in range(3))
+        def jg_field(axis):
+            out = {}
+            for bb in range(len(self.blocks)):
+                Jb, mb = self.block_metrics_cached(bb)
+                g = sum(mb[KEYS[axis][c]] ** 2 for c in range(3))
+                out[bb] = coefs[bb] * Jb * g
+            return out
 
-        dp = [np.gradient(pp, blk.h[a], axis=a, edge_order=2) for a in range(3)] \
-            if include_cross else None
+        if include_cross:
+            Jp, mp, glo, ghi = self.padded_geometry(b, 1)
+            cc = self.pad_field(b, coefs, 1)[0]
+            dp = [np.gradient(pp, blk.h[a], axis=a, edge_order=2) for a in range(3)]
+
+            def g_off(a1, a2):
+                return sum(mp[KEYS[a1][c]] * mp[KEYS[a2][c]] for c in range(3))
 
         out = []
         for axis in range(3):
-            g = sum(mp[KEYS[axis][c]] ** 2 for c in range(3))
-            Jg = cc * Jp * g
+            Jg, lo, hi = self.pad_field(b, jg_field(axis), 1)
             cross_cell = None
             if include_cross:
                 cross_cell = sum(cc * Jp * g_off(axis, o) * dp[o]
@@ -613,6 +671,8 @@ class Domain:
             shape = list(blk.shape); shape[axis] += 1
             f = np.zeros(shape)
             core = [slice(lo[a], lo[a] + blk.shape[a]) for a in range(3)]
+            ccore = [slice(glo[a], glo[a] + blk.shape[a]) for a in range(3)] \
+                if include_cross else None
             for k in range(n + 1):
                 a_lo, a_hi = lo[axis] + k - 1, lo[axis] + k
                 if a_lo < 0 or a_hi >= Jg.shape[axis]:
@@ -627,7 +687,9 @@ class Domain:
                     cf = 0.5 * (Jg[tuple(s1)] + Jg[tuple(s2)])
                     val = val + cf * (pp[tuple(s2)] - pp[tuple(s1)]) / blk.h[axis]
                 if include_cross:
-                    val = val + 0.5 * (cross_cell[tuple(s1)] + cross_cell[tuple(s2)])
+                    c1 = list(ccore); c1[axis] = glo[axis] + k - 1
+                    c2 = list(ccore); c2[axis] = glo[axis] + k
+                    val = val + 0.5 * (cross_cell[tuple(c1)] + cross_cell[tuple(c2)])
                 f[tuple(sl_out)] = val
             out.append(f)
         return out
@@ -765,7 +827,7 @@ class Domain:
                 g = {}
                 for side in (0, 1):
                     g[side] = self._ghost_field(bb, face_id(axis, side), width, base, upto,
-                                                k - 1)
+                                                k - 1, lo, hi)
                 cur = base
                 if g[0] is not None or g[1] is not None:
                     parts = []
@@ -786,7 +848,7 @@ class Domain:
         cur, lo, hi = upto(b, 3)
         return cur, lo, hi
 
-    def _ghost_field(self, b, fid, width, src, upto, k):
+    def _ghost_field(self, b, fid, width, src, upto, k, my_lo, my_hi):
         """Field ghost layers beyond face `fid`, nearest-first, in b's ordering. NO shift."""
         blk = self.blocks[b]
         axis, side = face_axis_side(fid)
@@ -809,7 +871,10 @@ class Domain:
         lay = np.moveaxis(other[tuple(sl)], oaxis, 0)
         if oside == 1:
             lay = lay[::-1]
-        return np.stack([to_mine(l) for l in lay])
+        # reconcile only the MISMATCH in tangential padding -- the two blocks either side of a
+        # connection can differ at a reentrant corner of an obstacle
+        lay = np.stack([to_mine(l) for l in lay])
+        return _match_extent(lay, olo, ohi, my_lo, my_hi, axis)
 
     def wall_mask(self):
         """

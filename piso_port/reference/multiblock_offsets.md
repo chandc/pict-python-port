@@ -625,6 +625,38 @@ periodic, so the blocks must **partition** the nodes without duplicating the int
 into 4 blocks of 4, not 5. Splitting a `linspace` by reflex gives overlapping blocks, which
 `validate()` rejects; the first attempt did exactly that.
 
+### Obstacle topology, and a 4x speed-up
+
+The 8-block vortex-street layout — a mesh with a **hole** — now runs: 20 PISO steps, flux
+divergence **4.66e-11**, mass balanced to 2.2e-16, on deliberately **non-uniform** blocks
+(columns 6/4/8, rows 5/4/5).
+
+**Three bugs surfaced only because this topology was tried**, each producing a plausible field:
+
+1. **Only the MISMATCH in tangential padding may be reconciled.** Trimming a ghost to the core
+   and re-padding with edge replication discards the neighbour's *real* ghost values wherever
+   both blocks were padded — which silently corrupted every seam in the uniform topologies (2×2
+   metrics went to 1.4e-01).
+2. `_fit_face` re-entered `upto()` for the block currently being built.
+3. **The face coefficient must come from the same source the matrix uses.**
+   `build_diffusion_matrix` forms it from each block's own metrics;
+   `pressure_face_fluxes` was recomputing it from *padded coordinates*, which are extrapolated
+   at a reentrant corner. The CG solve converged happily to 9e-11 while the corrected flux
+   divergence sat at **1.2e-01** — no pressure field can reconcile two inconsistent operators.
+   Padding the coefficient as a **field** fixes it and sidesteps corner ghosts entirely, since a
+   face coefficient only needs the core tangential range.
+
+**Performance.** Caching block metrics and padded geometry — both static, both previously
+recomputed on every operator call of every step:
+
+| | before | after |
+|---|---|---|
+| 2 blocks | 3.4× single-block | **0.9×** |
+| 4 blocks | 5.9× single-block | **1.4×** |
+
+Multi-block at 2 blocks is now marginally *faster* than single-block, and the obstacle smoke test
+went 6.1 s → 1.4 s.
+
 ### Still to build
 
 1. Block-aware **face-type registry** — one block's `+x` can be wall, inlet, outflow *or*
