@@ -1,0 +1,9 @@
+  End-to-end effect on a real run: same answer, fewer iterations?
+
+    preconditioner  Krylov it/step    s/step       divF
+              none            3193     0.488    3.7e-04
+            jacobi            1438     0.250    3.7e-04
+               amg             104     0.680    3.7e-04
+
+  max|u_jacobi - u_none| = 1.951e-09   (same answer)
+  max|u_amg - u_none| = 4.043e-09   (same answer)

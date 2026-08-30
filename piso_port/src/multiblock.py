@@ -452,10 +452,41 @@ class Domain:
         self._pg_cache[(b, width)] = out
         return out
 
+    def _axis_aligned_seams(self):
+        """True when every connection is orientation-identity and joins opposite sides.
+
+        Only then does block B's contravariant component along axis `a` mean the same thing as
+        block A's -- a permuted or flipped seam maps it onto a different axis, and an
+        upper-to-upper join reverses its sign (PICT negates it explicitly). The own-metric flux
+        path below assumes that correspondence, so it is taken only where it holds; anything
+        else keeps the padded-geometry path.
+        """
+        if getattr(self, "_aas", None) is None:
+            ok = True
+            for c in self.connections:
+                if tuple(c.axes) != (0, 1) or any(c.flips):
+                    ok = False
+                    break
+                if (c.fa % 2) == (c.fb % 2):
+                    ok = False
+                    break
+            self._aas = ok
+        return self._aas
+
     def face_fluxes(self, b, us, vs, ws):
         """
         Face fluxes for block b with CONNECTED and PERIODIC faces resolved from real neighbour
         data, so a seam face is an ordinary interior face rather than a prescribed boundary.
+
+        THE CONTRAVARIANT COMPONENTS COME FROM EACH BLOCK'S OWN METRICS and are then padded as
+        FIELDS -- never recomputed from padded COORDINATES. That distinction only bites at a
+        REENTRANT corner, where the diagonal ghost lies inside solid material so the padded
+        coordinates there are EXTRAPOLATED, and the two blocks extrapolate differently. Their
+        shared face flux then disagreed by 4.2e+00 at the five-domain BFS step corner while
+        matching to 0.00e+00 at every other cell of the same face, dragging flux divergence to
+        2e-04 instead of 2e-12. Same defect and same fix as the obstacle-topology bug in
+        pressure_face_fluxes: pad the quantity as a field, never re-derive it from padded
+        geometry.
 
         This is what `compute_face_fluxes` cannot do block-locally: it treats every
         non-periodic face as a domain boundary, so a connection would receive a PRESCRIBED flux
@@ -466,11 +497,22 @@ class Domain:
         """
         from src.phase5_fluxes import contravariant_components
         blk = self.blocks[b]
-        Jp, mp, lo, hi = self.padded_geometry(b, 1)
-        up = self.pad_field(b, us, 1)[0]
-        vp = self.pad_field(b, vs, 1)[0]
-        wp = self.pad_field(b, ws, 1)[0]
-        JU = contravariant_components(up, vp, wp, Jp, mp)
+        if self._axis_aligned_seams():
+            comps = {}
+            for bb in range(len(self.blocks)):
+                Jb, mb = self.block_metrics_cached(bb)
+                comps[bb] = contravariant_components(us[bb], vs[bb], ws[bb], Jb, mb)
+            JU, lo, hi = [], None, None
+            for axis in range(3):
+                arr, lo, hi = self.pad_field(
+                    b, {bb: comps[bb][axis] for bb in range(len(self.blocks))}, 1)
+                JU.append(arr)
+        else:
+            Jp, mp, lo, hi = self.padded_geometry(b, 1)
+            up = self.pad_field(b, us, 1)[0]
+            vp = self.pad_field(b, vs, 1)[0]
+            wp = self.pad_field(b, ws, 1)[0]
+            JU = contravariant_components(up, vp, wp, Jp, mp)
         F = []
         for axis in range(3):
             n = blk.shape[axis]

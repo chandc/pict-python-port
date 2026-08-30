@@ -1,0 +1,7 @@
+  Rhie-Chow on the FIVE-domain grid with Dong outflow -- never tested together.
+  The reentrant corner, the Dong Dirichlet nodes and the new face_fluxes path all
+  meet here for the first time.
+
+   rhie_chow  steps  div(interior)     amp(p)   flip   x_r/S  finite
+       False    500       1.59e-14  9.177e-03   0.97   2.742    True
+        True    500       2.08e-13  5.316e-04   0.11   2.700    True

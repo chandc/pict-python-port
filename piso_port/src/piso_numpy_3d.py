@@ -29,6 +29,8 @@ import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.linalg as splinalg
 
+from src.precond import make as make_precond
+
 from src.phase1_grid_metrics import (analytical_wavy_grid_mms, compute_numerical_metrics,
                                  make_grid, as_periodic)
 from src.phase2_operators import compute_gradient
@@ -46,7 +48,7 @@ class PISOSolver:
                  scheme='chorin', time_scheme='be', convection='sou',
                  pressure_coef='auto', picard_iters=1, implicit_cross=False,
                  outflow=None, rhie_chow=False, persistent_flux=False,
-                 ddt_corr=False):
+                 ddt_corr=False, preconditioner='jacobi'):
         """
         scheme:
           'chorin'      -- non-incremental projection: the predictor carries NO pressure
@@ -111,6 +113,8 @@ class PISOSolver:
         # implicit operator is the symmetric orthogonal part alone.)
         self.implicit_cross = implicit_cross
         self.rhie_chow = rhie_chow
+        # see src/precond.py: 'jacobi' halves the iteration count for free
+        self.preconditioner = preconditioner
         self.persistent_flux = persistent_flux
         self.ddt_corr = ddt_corr
         self.F_prev = None          # previous step's face flux, for ddt_corr
@@ -240,7 +244,9 @@ class PISOSolver:
                 src = 0.0 if self.velocity_source is None else self.velocity_source[comp]
                 rhs = (J * (trans - gp[comp] + self.nu * cross + src)).flat[ib] \
                       - A_ib @ phi_b
-                sol, info = splinalg.bicgstab(A_ii, rhs, x0=phi.flat[ib], rtol=1e-10, maxiter=5000)
+                sol, info = splinalg.bicgstab(A_ii, rhs, x0=phi.flat[ib],
+                                              M=make_precond(A_ii, self.preconditioner),
+                                              rtol=1e-10, maxiter=5000)
                 if info != 0:
                     print(f"  warning: momentum BiCGStab info={info}")
                 phi.flat[ib] = sol
@@ -422,7 +428,9 @@ class PISOSolver:
             return (b - b.mean()).flat[free]        # enforce compatibility (M is singular)
 
         def solve_fn(rhs, x0):
-            sol, info = splinalg.cg(M_ff, rhs, x0=x0, rtol=1e-13, maxiter=20000)
+            sol, info = splinalg.cg(M_ff, rhs, x0=x0,
+                                    M=make_precond(M_ff, self.preconditioner),
+                                    rtol=1e-13, maxiter=20000)
             if info != 0:
                 print(f"  warning: pressure CG info={info}")
             return sol

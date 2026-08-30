@@ -12,11 +12,12 @@ x_r/S rising from ~3 at Re=100 to ~6-7 near Re=400.
 The span is periodic and the flow is two-dimensional at these Reynolds numbers, so nz is kept
 small: a wide span would multiply the cost without changing the answer.
 """
-import sys, time, warnings
+import os, sys, time, warnings
 import numpy as np
 warnings.filterwarnings("ignore")
 from src.multiblock import face_id
 from src.piso_multiblock import MultiBlockPISO
+from src import checkpoint as ck
 from armaly_bfs_grid import bfs_domain, S, H_IN
 
 U_BULK = 1.0
@@ -79,6 +80,10 @@ def run(Re=100.0, nx=100, ny_lo=22, ny_up=24, nz=4, dt=0.02, nsteps=400,
         if i + 1 < len(dudy) and dudy[i + 1] > 0:     # interpolate the sign change
             f = -dudy[i] / (dudy[i + 1] - dudy[i])
             xr = xb[i] + f * (xb[i + 1] - xb[i])
+    os.makedirs("results/fields", exist_ok=True)
+    tag = f"bfs2_Re{int(Re)}{'_rc' if rhie_chow else ''}"
+    ck.save(m, f"results/fields/{tag}.npz", Re=np.array(Re), xr=np.array(xr),
+            steps=np.array(it + 1))
     if report:
         print(f"   Re={Re:6.0f}  nu={nu:.5f}  {it+1:4d} steps  divF {div:.1e}  "
               f"x_r/S = {xr:6.3f}   [{wall:.0f}s]")

@@ -25,11 +25,15 @@ face-type registry. Both are separate increments.
 import numpy as np
 import scipy.sparse.linalg as spla
 
+from src.precond import make as make_precond
+from src.linsolve import SolveCache
+
 
 class MultiBlockPISO:
     def __init__(self, domain, nu, dt, corrector_steps=2, tol=1e-13, time_scheme='bdf2',
                  scheme='rotational', picard_iters=2, implicit_cross=False,
-                 rhie_chow=False, persistent_flux=False, ddt_corr=False):
+                 rhie_chow=False, persistent_flux=False, ddt_corr=False,
+                 preconditioner='jacobi', linear_backend='scipy'):
         self.d = domain
         self.nu, self.dt = nu, dt
         # BDF2 by default, matching the single-block solver. The single-block Stokes study
@@ -56,6 +60,15 @@ class MultiBlockPISO:
         # is pure overhead.
         self.implicit_cross = implicit_cross
         self.rhie_chow = rhie_chow
+        # 'jacobi' by default: measured 2x fewer iterations at zero setup cost,
+        # and ~94% of a step is spent inside Krylov iterations. See src/precond.py.
+        self.preconditioner = preconditioner
+        # 'amgx' routes the pressure solve to NVIDIA AmgX on the GPU and reuses
+        # its hierarchy across steps; falls back to scipy off-GPU. See
+        # src/linsolve.py and src/amgx/README.md.
+        self.linear_backend = linear_backend
+        self._pcache = SolveCache(backend=linear_backend,
+                                  precond=preconditioner)
         self.persistent_flux = persistent_flux
         self.ddt_corr = ddt_corr
         self.F_prev = None          # previous step's face flux, for ddt_corr
@@ -226,11 +239,13 @@ class MultiBlockPISO:
                     # Dirichlet elimination, as the single-block solver does: solve only for
                     # the interior and move the known wall values across to the RHS.
                     phi_b = self._flat(bcs)[self.bnd]
-                    xi, info = spla.bicgstab(A_ii, rhs[self.interior] - A_ib @ phi_b,
+                    Pm = make_precond(A_ii, self.preconditioner)
+                    xi, info = spla.bicgstab(A_ii, rhs[self.interior] - A_ib @ phi_b, M=Pm,
                                              x0=x[self.interior], rtol=self.tol, maxiter=20000)
                     x = np.zeros(A.shape[0]); x[self.interior] = xi; x[self.bnd] = phi_b
                 else:
-                    x, info = spla.bicgstab(A, rhs, x0=x, rtol=self.tol, maxiter=20000)
+                    x, info = spla.bicgstab(A, rhs, x0=x, M=make_precond(A, self.preconditioner),
+                                            rtol=self.tol, maxiter=20000)
                 cur = self._unflat(x)
             star.append(self._unflat(x))
         us, vs, ws = star
@@ -338,9 +353,11 @@ class MultiBlockPISO:
             if self.implicit_cross:
                 sol = self._solve_cross(M, M_ff, free, rhs, coef, Jg)
             elif M_fD is not None:
-                sol, info = spla.bicgstab(M_ff, b_free, rtol=self.tol, maxiter=20000)
+                sol = self._pcache.solve(M_ff, b_free, symmetric=False,
+                                         rtol=self.tol, maxiter=20000, singular=False)
             else:
-                sol, info = spla.cg(M_ff, b_free, rtol=self.tol, maxiter=20000)
+                sol = self._pcache.solve(M_ff, b_free, symmetric=True,
+                                         rtol=self.tol, maxiter=20000, singular=True)
             pv = np.zeros(M.shape[0]); pv[free] = sol
             if M_fD is not None:
                 pv[pD] = pD_val

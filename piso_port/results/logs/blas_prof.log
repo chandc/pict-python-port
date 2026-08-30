@@ -1,0 +1,11 @@
+  Where does a step actually spend its time? (5-domain BFS, 12.6k cells)
+
+  total 5.46s for 10 steps
+
+      5.077s   93.0%  /Users/danielchan/Dropbox/PICT/.venv/lib/python3.9/site-packages/scipy/spa
+      3.079s   56.4%  /Users/danielchan/Dropbox/PICT/.venv/lib/python3.9/site-packages/scipy/spa
+      2.969s   54.4%  /Users/danielchan/Dropbox/PICT/.venv/lib/python3.9/site-packages/scipy/spa
+      2.862s   52.4%  /Users/danielchan/Dropbox/PICT/.venv/lib/python3.9/site-packages/scipy/spa
+      2.665s   48.8%  {built-in method scipy.sparse._sparsetools.csr_matvec}
+      0.132s    2.4%  /Users/danielchan/Dropbox/PICT/educational_python_port/src/multiblock.py:9
+      0.088s    1.6%  /Users/danielchan/Dropbox/PICT/educational_python_port/src/multiblock.py:6

@@ -1,0 +1,8 @@
+  10 steps, 12,576 cells, 4.95s wall
+
+  Krylov iterations total : 31,926   (3193 per step)
+  time inside Krylov      : 4.65s  (94% of wall)
+  cost per iteration      : 0.15 ms
+
+  -> the lever is ITERATION COUNT: 3193 SpMV-heavy iterations per step.
+     Halving it halves ~94% of the runtime.

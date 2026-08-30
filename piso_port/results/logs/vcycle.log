@@ -1,0 +1,16 @@
+
+  What would an OPTIMISED AMG have to beat?
+  The iteration-count win is hardware-independent; only the per-iteration COST
+  changes. So measure what one V-cycle costs relative to one sparse mat-vec.
+
+  operator: 26,720 unknowns, 184,848 nonzeros, 3 AMG levels
+    one sparse mat-vec           0.086 ms
+    one Jacobi apply             0.005 ms
+    one pyamg V-cycle            3.843 ms   =  44.9 SpMV
+
+  per step, using the measured iteration counts:
+    jacobi   1438 it x 0.090 ms =   129.6 ms
+    pyamg     104 it x 3.929 ms =   408.6 ms   (3.15x)
+
+  BREAK-EVEN: an AMG V-cycle must cost < 13.6 SpMV to beat Jacobi here.
+  pyamg's costs 44.9 SpMV. A well-implemented V-cycle is typically 3-5.

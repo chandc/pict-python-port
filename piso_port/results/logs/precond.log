@@ -1,0 +1,10 @@
+  Pressure operator: 12,576 x 12,576,  86,724 nonzeros
+
+          preconditioner  iterations    setup    solve    total
+     none (what we ship)       1,577   0.000s   0.116s   0.116s
+                  Jacobi         785   0.000s   0.060s   0.060s
+      ILU drop_tol=0.001      20,000   0.062s  11.921s  11.983s
+     ILU drop_tol=0.0001      20,000   0.064s  12.791s  12.854s
+
+  baseline 1,577 iterations / 0.116s is what every BFS run paid,
+  on EVERY pressure solve, 2 correctors per step, 3000 steps per run.

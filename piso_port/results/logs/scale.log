@@ -1,0 +1,8 @@
+  Does AMG overtake plain CG as the problem grows?
+  (CG iterations grow with N; AMG's stay ~constant.)
+
+      cells  none it   none s  jac it   jac s  amg it   amg s   best
+      3,888    1,113    0.035     588   0.020      70   0.035 jacobi
+     12,576    1,577    0.115     785   0.060      78   0.160 jacobi
+     26,720    2,080    0.248     996   0.130      78   0.303 jacobi
+     52,780    2,611    0.590   1,208   0.290      76   0.550 jacobi

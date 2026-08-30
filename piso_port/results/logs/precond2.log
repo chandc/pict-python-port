@@ -1,0 +1,15 @@
+  Pressure operator: 12,576 x 12,576,  86,724 nonzeros
+
+          preconditioner  iterations    setup    solve    total
+     none (what we ship)       1,577   0.000s   0.115s   0.115s
+                  Jacobi         785   0.000s   0.059s   0.059s
+      ILU drop_tol=0.001      20,000   0.061s  11.830s  11.892s
+     ILU drop_tol=0.0001      20,000   0.063s  12.744s  12.807s
+    AMG (pyamg, V-cycle)          78   0.019s   0.138s   0.157s
+
+  AMG hierarchy: 3 levels, grid complexity 1.13
+  iterations 1,577 -> 78  (20x fewer)
+  total time 0.115s -> 0.157s  (0.7x faster INCLUDING setup)
+
+  baseline 1,577 iterations is what every BFS run paid, on EVERY
+  pressure solve, 2 correctors per step, 3000 steps per run.

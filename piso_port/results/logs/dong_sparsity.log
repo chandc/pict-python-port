@@ -1,0 +1,10 @@
+  Does the Dong reduced system M_ff keep a constant sparsity pattern?
+  If the Dirichlet node set moves, replace_coefficients is INVALID and the
+  hierarchy cannot be reused -- which would void the 25x for our real runs.
+
+  Dirichlet nodes: 296 of 26,720 cells
+  node set identical across 8 steps: True
+  free-set size constant: True  (26,424)
+  M_ff sparsity identical across steps: True   nnz 182,792
+
+  -> replace_coefficients is VALID on the Dong path; hierarchy reuse holds.

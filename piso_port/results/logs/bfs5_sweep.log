@@ -1,0 +1,8 @@
+Armaly backward-facing step on the FIVE-domain grid, with Dong outflow.
+
+  Dong outflow, five domains. Reattachment reference: x_r/S ~ 3 / 5 / 6-7
+
+      saved results/fields/bfs5_Re100_dong.npz
+   Re=   100  dong  rc=False  3000 steps  divF(interior) 5.7e-15  x_r/S =  2.802  [3629s]
+      saved results/fields/bfs5_Re200_dong.npz
+   Re=   200  dong  rc=False  3000 steps  divF(interior) 7.0e-15  x_r/S =  4.854  [3524s]
